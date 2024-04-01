@@ -702,7 +702,12 @@ section {
   color: var(--color-primary);
   margin: 0;
 }
-
+.constructions .card-item a{
+  color: var(--color-secondary);
+}
+.constructions .card-item:hover a {
+  color:gold;
+}
 /*--------------------------------------------------------------
 # Services Section
 --------------------------------------------------------------*/
