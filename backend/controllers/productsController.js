@@ -63,6 +63,7 @@ exports.update = async (req, res, next) => {
   }
 };
 
+const { revertSlaughteredQuantityOnProductDelete } = require('../utils/revertSlaughtered');
 exports.remove = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -83,6 +84,7 @@ exports.remove = async (req, res, next) => {
       // otherwise ignore schema probe errors and proceed
     }
     await ProductModel.delete(id);
+    await revertSlaughteredQuantityOnProductDelete(id);
     res.json({ message: 'Product deleted successfully' });
   } catch (err) {
     next(err);

@@ -1,3 +1,53 @@
+// Batch product creation from slaughtered record
+const ProductModel = require('../models/productModel');
+
+exports.createProductsFromSlaughter = async (req, res, next) => {
+  try {
+    const { slaughteredId, option, weights } = req.body;
+    if (!slaughteredId || !option || !Array.isArray(weights) || weights.length === 0) {
+      throw new AppError('Missing or invalid parameters', 400);
+    }
+    // Get slaughtered record
+    const db = require('../config/db');
+    const [[slaughtered]] = await db.query('SELECT * FROM slaughtered WHERE id = ?', [slaughteredId]);
+    if (!slaughtered) throw new AppError('Slaughtered record not found', 404);
+
+    // Calculate total quantity to deduct
+    let totalQty = 0;
+    let productsToCreate = [];
+    if (option === 'whole') {
+      for (const wq of weights) {
+        if (!wq.weight || !wq.quantity) throw new AppError('Invalid weight/quantity', 400);
+        totalQty += Number(wq.quantity);
+        productsToCreate.push({ type: 'whole chicken', packaged_quantity: Number(wq.quantity), batch_id: slaughtered.batch_id, weight: Number(wq.weight) });
+      }
+    } else if (option === 'mince' || option === 'parts') {
+      for (const wq of weights) {
+        if (!wq.type || !wq.weight || !wq.quantity) throw new AppError('Invalid type/weight/quantity', 400);
+        totalQty += Number(wq.quantity);
+        productsToCreate.push({ type: wq.type, packaged_quantity: Number(wq.quantity), batch_id: slaughtered.batch_id, weight: Number(wq.weight) });
+      }
+    } else {
+      throw new AppError('Invalid product creation option', 400);
+    }
+    if (slaughtered.quantity < totalQty) throw new AppError('Not enough slaughtered quantity available', 400);
+
+    // Create products
+    const createdProducts = [];
+    for (const prod of productsToCreate) {
+      const created = await ProductModel.create(prod);
+      createdProducts.push(created);
+    }
+
+    // Reduce slaughtered quantity
+    const newQty = slaughtered.quantity - totalQty;
+    await db.query('UPDATE slaughtered SET quantity = ? WHERE id = ?', [newQty, slaughteredId]);
+
+    res.status(201).json({ message: 'Products created and slaughtered quantity updated', products: createdProducts, slaughteredId, newQty });
+  } catch (err) {
+    next(err);
+  }
+};
 const SlaughteredModel = require('../models/slaughteredModel');
 const ChickModel = require('../models/chickModel');
 const { AppError } = require('../utils/errors');

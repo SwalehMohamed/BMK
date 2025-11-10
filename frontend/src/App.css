@@ -459,7 +459,7 @@
 /* Login Page Enhancements */
 .login-container {
   min-height: 100vh;
-  background: linear-gradient(135deg, var(--primary-green) 0%, var(--light-green) 100%);
+  background: linear-gradient(135deg, var(--primary-white) 0%, var(--light-white) 100%);
   display: flex;
   align-items: center;
   justify-content: center;

@@ -37,20 +37,26 @@ class ProductModel {
     const payload = {
       type: product.type,
       packaged_quantity: product.packaged_quantity,
-      batch_id: product.batch_id ?? null
+      batch_id: product.batch_id ?? null,
+      weight: product.weight ?? null
     };
     const [result] = await db.query('INSERT INTO products SET ?', payload);
-    return { id: result.insertId, ...payload };
+    // Fetch the created row to get created_at
+    const [rows] = await db.query('SELECT * FROM products WHERE id = ?', [result.insertId]);
+    return rows[0];
   }
 
   static async update(id, product) {
     const payload = {
       type: product.type,
       packaged_quantity: product.packaged_quantity,
-      batch_id: product.batch_id ?? null
+      batch_id: product.batch_id ?? null,
+      weight: product.weight ?? null
     };
     await db.query('UPDATE products SET ? WHERE id = ?', [payload, id]);
-    return { id, ...payload };
+    // Fetch the updated row to get created_at
+    const [rows] = await db.query('SELECT * FROM products WHERE id = ?', [id]);
+    return rows[0];
   }
 
   static async delete(id) {

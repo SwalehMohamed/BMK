@@ -25,10 +25,18 @@ function SlaughterManager() {
     quantity: '',
     avg_weight: ''
   });
+  
   // Removed product modal state
   const [showProductModal, setShowProductModal] = useState(false);
-  const [productForm, setProductForm] = useState({ slaughterId: null, batch_id: '', packaged_quantity: '', product_type: 'meat', newType: '' });
-  const [productTypes, setProductTypes] = useState([]);
+  const [productForm, setProductForm] = useState({
+    slaughterId: null,
+    batch_id: '',
+    packaged_quantity: '',
+    product_type: 'meat',
+    newType: '',
+    creationOption: '',
+    wholeWeights: [{ weight: '', quantity: '' }]
+  });
   const [showQuickView, setShowQuickView] = useState(false);
   const [quickViewBatchId, setQuickViewBatchId] = useState('');
   const [quickViewList, setQuickViewList] = useState([]);
@@ -37,6 +45,19 @@ function SlaughterManager() {
   const [loading, setLoading] = useState(true);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+
+  // Delete slaughter record handler (must be inside component for hooks)
+  const handleDeleteSlaughter = async (id) => {
+    if (!window.confirm('Delete this slaughter record? This cannot be undone.')) return;
+    try {
+      await api.delete(`/slaughtered/${id}`);
+      setSuccess('Slaughter record deleted');
+      setTimeout(() => setSuccess(''), 2500);
+      fetchSlaughters();
+    } catch (err) {
+      setError(err?.response?.data?.message || 'Error deleting slaughter record');
+    }
+  };
 
 useEffect(() => {
   fetchSlaughters();
@@ -57,15 +78,6 @@ const fetchSlaughters = async () => {
   setLoading(false);
 };
 
-const fetchProductTypes = async () => {
-  try {
-    const res = await api.get('/product-types');
-    setProductTypes(res.data || []);
-  } catch (e) {
-    // Fallback to a couple defaults if endpoint missing
-    setProductTypes([{ id: 'meat', type: 'meat' }, { id: 'fresh', type: 'fresh' }, { id: 'frozen', type: 'frozen' }]);
-  }
-};
 
 const fetchProducts = async () => {
   try {
@@ -100,24 +112,54 @@ const handleSlaughterSubmit = async (e) => {
 
 // Removed product submit handler
 const openCreateProduct = async (s) => {
-  setProductForm({ slaughterId: s.id, batch_id: s.batch_id, packaged_quantity: String(s.quantity || ''), product_type: 'meat', newType: '' });
-  await fetchProductTypes();
+  setProductForm({
+    slaughterId: s.id,
+    batch_id: s.batch_id,
+    packaged_quantity: String(s.quantity || ''),
+    product_type: '',
+    newType: '',
+    creationOption: '',
+    wholeWeights: [{ weight: '', quantity: '' }],
+    minceWeights: [
+      { type: 'chicken mince', weight: '', quantity: '' },
+      { type: 'chicken wings', weight: '', quantity: '' }
+    ],
+    partsWeights: [
+      { type: 'chicken thighs', weight: '', quantity: '' },
+      { type: 'chicken steak', weight: '', quantity: '' },
+      { type: 'chicken wings', weight: '', quantity: '' }
+    ]
+  });
   setShowProductModal(true);
 };
 
 const saveProduct = async (e) => {
   e.preventDefault();
   try {
-    const type = productForm.product_type === '__add_new__' ? (productForm.newType || '').trim() : productForm.product_type;
-    if (!type) {
-      return setError('Please select or enter a product type');
+    const { creationOption, slaughterId, wholeWeights, minceWeights, partsWeights } = productForm;
+    let payload = { slaughteredId: slaughterId, option: creationOption };
+    if (creationOption === 'whole') {
+      // Validate and send array of {weight, quantity}
+      if (!wholeWeights || !wholeWeights.length) return setError('Please add at least one weight group');
+      const valid = wholeWeights.every(wq => Number(wq.weight) > 0 && Number(wq.quantity) > 0);
+      if (!valid) return setError('All weights and quantities must be positive');
+      payload.weights = wholeWeights.map(wq => ({ weight: Number(wq.weight), quantity: Number(wq.quantity) }));
+    } else if (creationOption === 'mince') {
+      if (!minceWeights || !minceWeights.length) return setError('Please add at least one mince group');
+      const valid = minceWeights.every(wq => wq.type && Number(wq.weight) > 0 && Number(wq.quantity) > 0);
+      if (!valid) return setError('All weights and quantities must be positive');
+      payload.weights = minceWeights.map(wq => ({ type: wq.type, weight: Number(wq.weight), quantity: Number(wq.quantity) }));
+    } else if (creationOption === 'parts') {
+      if (!partsWeights || !partsWeights.length) return setError('Please add at least one part group');
+      const valid = partsWeights.every(wq => wq.type && Number(wq.weight) > 0 && Number(wq.quantity) > 0);
+      if (!valid) return setError('All weights and quantities must be positive');
+      payload.weights = partsWeights.map(wq => ({ type: wq.type, weight: Number(wq.weight), quantity: Number(wq.quantity) }));
+    } else {
+      return setError('Invalid product creation option');
     }
-    const qty = Number(productForm.packaged_quantity);
-    if (!Number.isFinite(qty) || qty < 0) {
-      return setError('Packaged quantity must be a non-negative number');
-    }
-    await api.post('/products', { type, packaged_quantity: qty, batch_id: productForm.batch_id });
-    setSuccess('Product created from slaughter');
+    // Call new backend endpoint
+    await api.post('/slaughtered/create-products', payload);
+    setSuccess('Products created from slaughter');
     setTimeout(() => setSuccess(''), 2500);
     setShowProductModal(false);
     setError('');
@@ -130,6 +172,8 @@ const saveProduct = async (e) => {
       setQuickViewList(list);
       setShowQuickView(true);
     } catch (_) {}
+    // Refresh slaughtered records to show updated quantity
+    fetchSlaughters();
   } catch (err) {
     console.error('Error creating product', err);
     setError(err?.response?.data?.message || 'Error creating product');
@@ -214,6 +258,7 @@ const saveProduct = async (e) => {
                       <td className="text-end">
                         <div className="btn-group btn-group-sm">
                           <Button variant="outline-success" onClick={() => openCreateProduct(s)}>Create Product</Button>
+                          <Button variant="outline-danger" onClick={() => handleDeleteSlaughter(s.id)}>Delete</Button>
                         </div>
                       </td>
                     </tr>
@@ -285,6 +330,7 @@ const saveProduct = async (e) => {
         </Modal>
 
         {/* Products UI removed from this page */}
+
         <Modal show={showProductModal} onHide={() => setShowProductModal(false)}>
           <Modal.Header closeButton>
             <Modal.Title>Create Product from Slaughter</Modal.Title>
@@ -295,28 +341,220 @@ const saveProduct = async (e) => {
                 <Form.Label>Batch</Form.Label>
                 <Form.Control value={productForm.batch_id || ''} disabled />
               </Form.Group>
-              <Form.Group className="mb-2">
-                <Form.Label>Product Type</Form.Label>
-                <Form.Select value={productForm.product_type} onChange={(e)=>setProductForm(prev=>({...prev, product_type: e.target.value}))}>
-                  {(productTypes||[]).map(pt => (
-                    <option key={pt.id || pt.type} value={pt.type}>{pt.type}</option>
-                  ))}
-                  <option value="__add_new__">+ Add new type…</option>
-                </Form.Select>
-                {productForm.product_type === '__add_new__' && (
-                  <Form.Control className="mt-2" placeholder="Enter new product type" value={productForm.newType}
-                    onChange={(e)=>setProductForm(prev=>({...prev, newType: e.target.value}))} />
-                )}
-              </Form.Group>
               <Form.Group className="mb-3">
-                <Form.Label>Packaged Quantity</Form.Label>
-                <Form.Control type="number" min={0} value={productForm.packaged_quantity}
-                  onChange={(e)=>setProductForm(prev=>({...prev, packaged_quantity: e.target.value}))} />
-                <Form.Text className="text-muted">Defaulted to the slaughtered quantity; adjust as needed.</Form.Text>
+                <Form.Label>Product Creation Option</Form.Label>
+                <Form.Select value={productForm.creationOption || ''} onChange={e => setProductForm(prev => ({ ...prev, creationOption: e.target.value, product_type: '', newType: '' }))} required>
+                  <option value="">Select option...</option>
+                  <option value="whole">Use Whole Chicken</option>
+                  <option value="mince">Mince</option>
+                  <option value="parts">Use Parts</option>
+                </Form.Select>
               </Form.Group>
+
+
+              {/* Whole Chicken Option - Multiple Weights */}
+              {productForm.creationOption === 'whole' && (
+                <div className="mb-3">
+                  <Form.Label>Whole Chicken Weights & Quantities</Form.Label>
+                  {(productForm.wholeWeights || []).map((row, idx) => (
+                    <div key={idx} className="d-flex align-items-center mb-2 gap-2">
+                      <Form.Control
+                        type="number"
+                        min={0.1}
+                        step={0.01}
+                        placeholder="Weight (kg)"
+                        value={row.weight}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setProductForm(prev => {
+                            const arr = [...prev.wholeWeights];
+                            arr[idx] = { ...arr[idx], weight: val };
+                            return { ...prev, wholeWeights: arr };
+                          });
+                        }}
+                        required
+                        style={{ maxWidth: 120 }}
+                      />
+                      <Form.Control
+                        type="number"
+                        min={1}
+                        placeholder="Quantity"
+                        value={row.quantity}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setProductForm(prev => {
+                            const arr = [...prev.wholeWeights];
+                            arr[idx] = { ...arr[idx], quantity: val };
+                            return { ...prev, wholeWeights: arr };
+                          });
+                        }}
+                        required
+                        style={{ maxWidth: 120 }}
+                      />
+                      <Button variant="outline-danger" size="sm" onClick={() => {
+                        setProductForm(prev => ({
+                          ...prev,
+                          wholeWeights: prev.wholeWeights.filter((_, i) => i !== idx)
+                        }));
+                      }} disabled={productForm.wholeWeights.length === 1}>Remove</Button>
+                    </div>
+                  ))}
+                  <Button variant="outline-primary" size="sm" onClick={() => setProductForm(prev => ({ ...prev, wholeWeights: [...prev.wholeWeights, { weight: '', quantity: '' }] }))}>
+                    + Add Row
+                  </Button>
+                  <Form.Text className="text-muted d-block mt-1">Specify the number of chickens for each weight group.</Form.Text>
+                </div>
+              )}
+
+
+              {/* Mince Option - Multiple Weights */}
+              {productForm.creationOption === 'mince' && (
+                <div className="mb-3">
+                  <Form.Label>Chicken Mince & Wings Weights/Quantities</Form.Label>
+                  {(productForm.minceWeights || [{ type: 'chicken mince', weight: '', quantity: '' }, { type: 'chicken wings', weight: '', quantity: '' }]).map((row, idx) => (
+                    <div key={idx} className="d-flex align-items-center mb-2 gap-2">
+                      <Form.Select
+                        value={row.type}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setProductForm(prev => {
+                            const arr = [...(prev.minceWeights || [])];
+                            arr[idx] = { ...arr[idx], type: val };
+                            return { ...prev, minceWeights: arr };
+                          });
+                        }}
+                        style={{ maxWidth: 150 }}
+                        required
+                      >
+                        <option value="chicken mince">Chicken Mince</option>
+                        <option value="chicken wings">Chicken Wings</option>
+                      </Form.Select>
+                      <Form.Control
+                        type="number"
+                        min={0.1}
+                        step={0.01}
+                        placeholder="Weight (kg)"
+                        value={row.weight}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setProductForm(prev => {
+                            const arr = [...(prev.minceWeights || [])];
+                            arr[idx] = { ...arr[idx], weight: val };
+                            return { ...prev, minceWeights: arr };
+                          });
+                        }}
+                        required
+                        style={{ maxWidth: 120 }}
+                      />
+                      <Form.Control
+                        type="number"
+                        min={1}
+                        placeholder="Quantity"
+                        value={row.quantity}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setProductForm(prev => {
+                            const arr = [...(prev.minceWeights || [])];
+                            arr[idx] = { ...arr[idx], quantity: val };
+                            return { ...prev, minceWeights: arr };
+                          });
+                        }}
+                        required
+                        style={{ maxWidth: 120 }}
+                      />
+                      <Button variant="outline-danger" size="sm" onClick={() => {
+                        setProductForm(prev => ({
+                          ...prev,
+                          minceWeights: (prev.minceWeights || []).filter((_, i) => i !== idx)
+                        }));
+                      }} disabled={(productForm.minceWeights || []).length <= 2}>Remove</Button>
+                    </div>
+                  ))}
+                  <Button variant="outline-primary" size="sm" onClick={() => setProductForm(prev => ({ ...prev, minceWeights: [...(prev.minceWeights || []), { type: 'chicken mince', weight: '', quantity: '' }] }))}>
+                    + Add Row
+                  </Button>
+                  <Form.Text className="text-muted d-block mt-1">Specify the number and weight for each mince or wings group.</Form.Text>
+                </div>
+              )}
+
+              {/* Parts Option - Multiple Weights */}
+              {productForm.creationOption === 'parts' && (
+                <div className="mb-3">
+                  <Form.Label>Parts Weights & Quantities</Form.Label>
+                  {(productForm.partsWeights || [
+                    { type: 'chicken thighs', weight: '', quantity: '' },
+                    { type: 'chicken steak', weight: '', quantity: '' },
+                    { type: 'chicken wings', weight: '', quantity: '' }
+                  ]).map((row, idx) => (
+                    <div key={idx} className="d-flex align-items-center mb-2 gap-2">
+                      <Form.Select
+                        value={row.type}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setProductForm(prev => {
+                            const arr = [...(prev.partsWeights || [])];
+                            arr[idx] = { ...arr[idx], type: val };
+                            return { ...prev, partsWeights: arr };
+                          });
+                        }}
+                        style={{ maxWidth: 150 }}
+                        required
+                      >
+                        <option value="chicken thighs">Chicken Thighs</option>
+                        <option value="chicken steak">Chicken Steak</option>
+                        <option value="chicken wings">Chicken Wings</option>
+                      </Form.Select>
+                      <Form.Control
+                        type="number"
+                        min={0.1}
+                        step={0.01}
+                        placeholder="Weight (kg)"
+                        value={row.weight}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setProductForm(prev => {
+                            const arr = [...(prev.partsWeights || [])];
+                            arr[idx] = { ...arr[idx], weight: val };
+                            return { ...prev, partsWeights: arr };
+                          });
+                        }}
+                        required
+                        style={{ maxWidth: 120 }}
+                      />
+                      <Form.Control
+                        type="number"
+                        min={1}
+                        placeholder="Quantity"
+                        value={row.quantity}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setProductForm(prev => {
+                            const arr = [...(prev.partsWeights || [])];
+                            arr[idx] = { ...arr[idx], quantity: val };
+                            return { ...prev, partsWeights: arr };
+                          });
+                        }}
+                        required
+                        style={{ maxWidth: 120 }}
+                      />
+                      <Button variant="outline-danger" size="sm" onClick={() => {
+                        setProductForm(prev => ({
+                          ...prev,
+                          partsWeights: (prev.partsWeights || []).filter((_, i) => i !== idx)
+                        }));
+                      }} disabled={(productForm.partsWeights || []).length <= 3}>Remove</Button>
+                    </div>
+                  ))}
+                  <Button variant="outline-primary" size="sm" onClick={() => setProductForm(prev => ({ ...prev, partsWeights: [...(prev.partsWeights || []), { type: 'chicken thighs', weight: '', quantity: '' }] }))}>
+                    + Add Row
+                  </Button>
+                  <Form.Text className="text-muted d-block mt-1">Specify the number and weight for each part group.</Form.Text>
+                </div>
+              )}
+
               <div className="text-end">
                 <Button variant="secondary" className="me-2" onClick={()=>setShowProductModal(false)}>Cancel</Button>
-                <Button variant="primary" type="submit">Save Product</Button>
+                <Button variant="primary" type="submit">Save Product(s)</Button>
               </div>
             </Form>
           </Modal.Body>
