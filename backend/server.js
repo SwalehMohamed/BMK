@@ -16,6 +16,7 @@ const deliveriesRoutes = require('./routes/deliveriesRoutes');
 const salesRoutes = require('./routes/salesRoutes');
 const mortalitiesRoutes = require('./routes/mortalitiesRoutes');
 const { ensureTables } = require('./config/dbInit');
+const { verifyTransport } = require('./utils/email');
 
 dotenv.config();
 
@@ -59,6 +60,8 @@ app.use(errorHandler);
 ensureTables()
   .catch(err => console.error('DB initialization failed:', err))
   .finally(() => {
+    // Verify SMTP connection (non-blocking)
+    verifyTransport?.();
     app.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
     });

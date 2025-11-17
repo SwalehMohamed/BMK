@@ -220,6 +220,20 @@ async function ensureTables() {
       console.error('DB init error ensuring product_types.price column:', e2.message);
     }
   }
+
+  // Ensure users table has password reset columns
+  try {
+    const [cols] = await db.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'users'`);
+    const names = cols.map(c => c.column_name);
+    if (!names.includes('reset_token_hash')) {
+      try { await db.query(`ALTER TABLE users ADD COLUMN reset_token_hash VARCHAR(64) NULL AFTER password_hash`); } catch(e) {}
+    }
+    if (!names.includes('reset_token_expires')) {
+      try { await db.query(`ALTER TABLE users ADD COLUMN reset_token_expires DATETIME NULL AFTER reset_token_hash`); } catch(e) {}
+    }
+  } catch (err) {
+    console.error('DB init error ensuring users reset columns:', err.message);
+  }
 }
 
 module.exports = { ensureTables };

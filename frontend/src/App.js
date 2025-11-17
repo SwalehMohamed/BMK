@@ -17,6 +17,8 @@ import Sales from './components/Sales';
 import AdminLanding from './pages/AdminLanding';
 import UserLanding from './pages/UserLanding';
 import LoginPage from './pages/LoginPage';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import ProfileSettings from './pages/ProfileSettings';
 import { AuthProvider } from './context/AuthContext';
 import PrivateRoute from './utils/PrivateRoute';
@@ -29,6 +31,8 @@ function App() {
         <Header />
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="*" element={<div className="container mt-5"><h2>404 - Page Not Found</h2></div>} />
 
           <Route element={<PrivateRoute />}>

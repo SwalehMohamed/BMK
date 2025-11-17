@@ -1,6 +1,8 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const db = require('../config/db');
+const { sendMail } = require('../utils/email');
 
 // Helper: detect users table columns
 async function detectUserColumns() {
@@ -184,6 +186,52 @@ module.exports = {
   getAllUsers,
   getCurrentUser,
   createUser,
+  async forgotPassword(req, res) {
+    try {
+      const { email } = req.body;
+      if (!email) return res.status(400).json({ message: 'Email required' });
+      const [rows] = await db.query('SELECT id, email FROM users WHERE email = ?', [email]);
+      if (rows.length === 0) return res.json({ message: 'If that email exists a reset link was sent' });
+      const user = rows[0];
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const expires = new Date(Date.now() + 1000 * 60 * 60);
+      await db.query('UPDATE users SET reset_token_hash = ?, reset_token_expires = ? WHERE id = ?', [tokenHash, expires, user.id]);
+      const baseUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+      const resetLink = `${baseUrl}/reset-password?token=${rawToken}`;
+        const html = `<p>You requested a password reset.</p><p><a href="${resetLink}">Reset Password</a></p><p>This link expires in 1 hour.</p>`;
+        // Log link for local debugging (not in production)
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('🔗 Password reset link:', resetLink);
+        }
+      await sendMail({ to: email, subject: 'Password Reset', html });
+      const payload = { message: 'If that email exists a reset link was sent' };
+      if (process.env.NODE_ENV !== 'production') {
+        payload.debugResetLink = resetLink;
+      }
+      res.json(payload);
+    } catch (e) {
+      res.status(500).json({ message: 'Server error', error: e.message });
+    }
+  },
+  async resetPassword(req, res) {
+    try {
+      const { token, password } = req.body;
+      if (!token || !password) return res.status(400).json({ message: 'Token and new password required' });
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      const [rows] = await db.query('SELECT id, reset_token_expires FROM users WHERE reset_token_hash = ?', [tokenHash]);
+      if (rows.length === 0) return res.status(400).json({ message: 'Invalid or expired token' });
+      const user = rows[0];
+      if (!user.reset_token_expires || new Date(user.reset_token_expires).getTime() < Date.now()) {
+        return res.status(400).json({ message: 'Invalid or expired token' });
+      }
+      const hashed = await bcrypt.hash(password, 10);
+      await db.query('UPDATE users SET password_hash = ?, reset_token_hash = NULL, reset_token_expires = NULL WHERE id = ?', [hashed, user.id]);
+      res.json({ message: 'Password reset successful' });
+    } catch (e) {
+      res.status(500).json({ message: 'Server error', error: e.message });
+    }
+  },
   // Update user (admin only). Supports changing name/username, email, role, and optional password
   async updateUser(req, res) {
     try {

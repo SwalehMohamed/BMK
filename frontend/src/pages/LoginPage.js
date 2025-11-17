@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Form, Button, Alert, Container, Row, Col, Card, Spinner } from 'react-bootstrap';
 import { FaEnvelope, FaLock, FaSignInAlt } from 'react-icons/fa';
@@ -121,6 +121,9 @@ function LoginPage() {
                     )}
                   </Button>
                 </Form>
+                <div className="text-center mt-2">
+                  <Link to="/forgot-password">Forgot password?</Link>
+                </div>
               </Card.Body>
             </Card>
           </Col>
