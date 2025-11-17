@@ -47,11 +47,9 @@ exports.createProductsFromSlaughter = async (req, res, next) => {
       createdProducts.push(created);
     }
 
-    // Deduct used quantity
-    const newQty = slaughtered.quantity - totalQty;
-    await db.query('UPDATE slaughtered SET quantity = ? WHERE id = ?', [newQty, slaughteredId]);
-
-    res.status(201).json({ message: 'Products created', products: createdProducts, slaughteredId, remaining_quantity: newQty });
+    // Do NOT deduct from slaughtered.quantity when creating products.
+    // Slaughtered quantity represents the total birds slaughtered for the batch and remains immutable here.
+    res.status(201).json({ message: 'Products created', products: createdProducts, slaughteredId, remaining_quantity: slaughtered.quantity });
   } catch (err) {
     next(err);
   }

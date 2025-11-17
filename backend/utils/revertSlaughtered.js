@@ -22,21 +22,8 @@ async function revertSlaughteredQuantityOnProductDelete(productId) {
     return { performed: false, reason: 'downstream_consumption_detected', orderCount, deliveredCount };
   }
 
-  let targetId = product.slaughtered_id || null;
-  if (!targetId && product.batch_id) {
-    const [[slaughteredLatest]] = await db.query('SELECT id, quantity FROM slaughtered WHERE batch_id = ? ORDER BY date DESC, id DESC LIMIT 1', [product.batch_id]);
-    if (slaughteredLatest) targetId = slaughteredLatest.id;
-  }
-  if (!targetId) return { performed: false, reason: 'no_slaughter_reference' };
-
-  const [[slRow]] = await db.query('SELECT quantity FROM slaughtered WHERE id = ?', [targetId]);
-  if (!slRow) return { performed: false, reason: 'slaughter_record_missing' };
-
-  const currentQty = Number(slRow.quantity);
-  const restoreAmount = Number(product.packaged_quantity || 0);
-  const newQty = currentQty + restoreAmount;
-  await db.query('UPDATE slaughtered SET quantity = ? WHERE id = ?', [newQty, targetId]);
-  return { performed: true, restoreAmount, slaughteredId: targetId, previousQty: currentQty, newQty };
+  // Design change: products no longer deduct from slaughtered.quantity, so no restoration is needed.
+  return { performed: false, reason: 'no_op_design' };
 }
 
 module.exports = { revertSlaughteredQuantityOnProductDelete };
