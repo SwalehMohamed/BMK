@@ -16,6 +16,9 @@ import {
 function Mortalities() {
   const { currentUser } = useAuth();
   const [rows, setRows] = useState([]);
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, pages: 0 });
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ chick_batch_id: '', date: '', number_dead: '', reason: '' });
   const [batches, setBatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -25,14 +28,26 @@ function Mortalities() {
   const [form, setForm] = useState({ chick_batch_id: '', date: new Date().toISOString().slice(0,10), number_dead: '', reason: '' });
   const [chartBatchId, setChartBatchId] = useState('');
 
-  const fetchAll = async () => {
+  const fetchAll = async (page = meta.page, limit = meta.limit) => {
     setLoading(true);
     try {
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(limit));
+      if (filters.batchId) params.set('batch_id', filters.batchId);
+      if (filters.dateFrom) params.set('dateFrom', filters.dateFrom);
+      if (filters.dateTo) params.set('dateTo', filters.dateTo);
       const [mRes, bRes] = await Promise.all([
-        api.get('/mortalities'),
+        api.get(`/mortalities?${params.toString()}`),
         api.get('/chicks?limit=1000')
       ]);
-      setRows(mRes.data || []);
+      if (mRes.data?.data) {
+        setRows(mRes.data.data);
+        if (mRes.data.meta) setMeta(mRes.data.meta);
+      } else {
+        setRows(mRes.data || []);
+        setMeta(m => ({ ...m, total: (mRes.data || []).length, pages: 1 }));
+      }
       setBatches(bRes.data?.data || []);
       setError('');
     } catch (err) {
@@ -43,7 +58,12 @@ function Mortalities() {
     }
   };
 
-  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => { fetchAll(1, meta.limit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { fetchAll(1, meta.limit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.batchId, filters.dateFrom, filters.dateTo]);
   useEffect(() => { setChartBatchId(filters.batchId || ''); }, [filters.batchId]);
 
   const filtered = useMemo(() => {
@@ -59,10 +79,10 @@ function Mortalities() {
   }, [rows, filters]);
 
   const summary = useMemo(() => {
-    const count = (filtered || []).length;
-    const totalDead = (filtered || []).reduce((a, r) => a + Number(r.number_dead || 0), 0);
+    const count = (rows || []).length;
+    const totalDead = (rows || []).reduce((a, r) => a + Number(r.number_dead || 0), 0);
     return { count, totalDead };
-  }, [filtered]);
+  }, [rows]);
 
   const addMortality = async (e) => {
     e.preventDefault();
@@ -112,8 +132,9 @@ function Mortalities() {
       {success && <Alert variant="success">{success}</Alert>}
 
       <div className="d-flex flex-wrap gap-3 mb-3 small text-muted">
-        <div className="badge bg-secondary">Records: {summary.count}</div>
-        <div className="badge bg-danger">Total Dead: {summary.totalDead}</div>
+        <div className="badge bg-secondary">Records (page): {summary.count}</div>
+        <div className="badge bg-danger">Total Dead (page): {summary.totalDead}</div>
+        <div className="badge bg-light text-dark">Page {meta.page} of {meta.pages} • Total {meta.total}</div>
       </div>
 
       <div className="row g-2 mb-3">
@@ -191,15 +212,51 @@ function Mortalities() {
               ) : (
                 (filtered || []).map(m => (
                   <tr key={m.id}>
-                    <td>{m.date ? new Date(m.date).toLocaleDateString() : '-'}</td>
-                    <td>{m.batch_name || `#${m.chick_batch_id}`}</td>
+                    <td>{editingId === m.id ? (
+                      <Form.Control type="date" value={editForm.date} onChange={(e)=>setEditForm(prev=>({...prev,date:e.target.value}))} />
+                    ) : (m.date ? new Date(m.date).toLocaleDateString() : '-')}</td>
+                    <td>{editingId === m.id ? (
+                      <Form.Select value={editForm.chick_batch_id} onChange={(e)=>setEditForm(prev=>({...prev,chick_batch_id:e.target.value}))}>
+                        {(batches||[]).map(b => <option key={b.id} value={b.id}>{b.batch_name}</option>)}
+                      </Form.Select>
+                    ) : (m.batch_name || `#${m.chick_batch_id}`)}</td>
                     <td>{m.breed || '-'}</td>
-                    <td className="text-danger fw-bold">{m.number_dead}</td>
-                    <td>{m.reason || ''}</td>
+                    <td className="text-danger fw-bold">{editingId === m.id ? (
+                      <Form.Control type="number" min={1} value={editForm.number_dead} onChange={(e)=>setEditForm(prev=>({...prev,number_dead:e.target.value}))} />
+                    ) : m.number_dead}</td>
+                    <td>{editingId === m.id ? (
+                      <Form.Control value={editForm.reason} onChange={(e)=>setEditForm(prev=>({...prev,reason:e.target.value}))} />
+                    ) : (m.reason || '')}</td>
                     <td className="text-end">
                       {currentUser?.role === 'admin' && (
                         <div className="btn-group btn-group-sm">
-                          <Button variant="outline-danger" onClick={()=>removeMortality(m.id)}>Delete</Button>
+                          {editingId === m.id ? (
+                            <>
+                              <Button variant="success" onClick={async ()=>{
+                                try {
+                                  const payload = {
+                                    chick_batch_id: Number(editForm.chick_batch_id),
+                                    date: editForm.date,
+                                    number_dead: Number(editForm.number_dead),
+                                    reason: editForm.reason
+                                  };
+                                  await api.put(`/mortalities/${m.id}`, payload);
+                                  setSuccess('Mortality updated'); setTimeout(()=>setSuccess(''), 2000);
+                                  setEditingId(null);
+                                  fetchAll(meta.page, meta.limit);
+                                } catch (err) {
+                                  console.error('Error updating mortality', err);
+                                  setError(err?.response?.data?.message || 'Error updating mortality');
+                                }
+                              }}>Save</Button>
+                              <Button variant="secondary" onClick={()=>setEditingId(null)}>Cancel</Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button variant="outline-primary" onClick={()=>{ setEditingId(m.id); setEditForm({ chick_batch_id: m.chick_batch_id, date: m.date, number_dead: m.number_dead, reason: m.reason || '' }); }}>Edit</Button>
+                              <Button variant="outline-danger" onClick={()=>removeMortality(m.id)}>Delete</Button>
+                            </>
+                          )}
                         </div>
                       )}
                     </td>
@@ -208,6 +265,16 @@ function Mortalities() {
               )}
             </tbody>
           </Table>
+          <div className="d-flex justify-content-between align-items-center mt-2">
+            <div className="small text-muted">Page {meta.page} of {meta.pages} | Total {meta.total} mortality records</div>
+            <div className="d-flex gap-2 align-items-center">
+              <Form.Select size="sm" value={meta.limit} onChange={(e)=>{ const lim = Number(e.target.value); setMeta(m=>({...m, limit: lim })); fetchAll(1, lim); }}>
+                {[10,20,50,100].map(sz => <option key={sz} value={sz}>{sz}/page</option>)}
+              </Form.Select>
+              <Button variant="outline-secondary" size="sm" disabled={meta.page<=1} onClick={()=>fetchAll(meta.page-1, meta.limit)}>Prev</Button>
+              <Button variant="outline-secondary" size="sm" disabled={meta.page>=meta.pages} onClick={()=>fetchAll(meta.page+1, meta.limit)}>Next</Button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 function Deliveries() {
   const { currentUser } = useAuth();
   const [deliveries, setDeliveries] = useState([]);
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, pages: 0 });
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -22,17 +23,39 @@ function Deliveries() {
     notes: ''
   });
   const [filters, setFilters] = useState({ orderId: '', recipient: '', dateFrom: '', dateTo: '' });
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({
+    order_id: '',
+    delivery_date: '',
+    recipient_name: '',
+    address: '',
+    quantity_delivered: '',
+    notes: ''
+  });
 
   const orderOptions = useMemo(() => (orders || []).map(o => ({ value: o.id, label: `${o.customer_name} • ${o.product_type || o.product_type_resolved || 'N/A'} (${o.quantity})` })), [orders]);
 
-  const fetchAll = async () => {
+  const fetchAll = async (page = meta.page, limit = meta.limit) => {
     setLoading(true);
     try {
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(limit));
+      if (filters.orderId) params.set('order_id', String(filters.orderId));
+      if (filters.recipient) params.set('recipient', filters.recipient);
+      if (filters.dateFrom) params.set('date_from', filters.dateFrom);
+      if (filters.dateTo) params.set('date_to', filters.dateTo);
       const [dRes, oRes] = await Promise.all([
-        api.get('/deliveries'),
+        api.get(`/deliveries?${params.toString()}`),
         api.get('/orders'),
       ]);
-      setDeliveries(dRes.data || []);
+      if (dRes.data?.data) {
+        setDeliveries(dRes.data.data);
+        if (dRes.data.meta) setMeta(dRes.data.meta);
+      } else {
+        setDeliveries(dRes.data || []);
+        setMeta(m => ({ ...m, total: dRes.data?.length || 0, pages: 1 }));
+      }
       setOrders(oRes.data || []);
       setError('');
     } catch (err) {
@@ -43,7 +66,13 @@ function Deliveries() {
     }
   };
 
-  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => { fetchAll(1, meta.limit); /* reset to page 1 on mount */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Refetch when filters or page size change
+  useEffect(() => { fetchAll(1, meta.limit); /* reset page */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.orderId, filters.recipient, filters.dateFrom, filters.dateTo]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -74,24 +103,11 @@ function Deliveries() {
     }
   };
 
-  const filtered = useMemo(() => {
-    const df = filters.dateFrom ? new Date(filters.dateFrom) : null;
-    const dt = filters.dateTo ? new Date(filters.dateTo) : null;
-    return (deliveries || []).filter(d => {
-      const oOk = filters.orderId ? String(d.order_id || '').trim() === String(filters.orderId).trim() : true;
-      const rOk = filters.recipient ? String(d.recipient_name || '').toLowerCase().includes(filters.recipient.toLowerCase()) : true;
-      const dd = d.delivery_date ? new Date(d.delivery_date) : null;
-      const dfOk = df ? (dd && dd >= df) : true;
-      const dtOk = dt ? (dd && dd <= dt) : true;
-      return oOk && rOk && dfOk && dtOk;
-    });
-  }, [deliveries, filters]);
-
   const summary = useMemo(() => {
-    const count = (filtered || []).length;
-    const qty = (filtered || []).reduce((a, d) => a + Number(d.quantity_delivered || 0), 0);
+    const count = (deliveries || []).length;
+    const qty = (deliveries || []).reduce((a, d) => a + Number(d.quantity_delivered || 0), 0);
     return { count, qty };
-  }, [filtered]);
+  }, [deliveries]);
 
   const addFooter = (doc, preparedBy, generatedAt) => {
     const pageCount = doc.internal.getNumberOfPages();
@@ -139,8 +155,9 @@ function Deliveries() {
         <Button onClick={() => setShowModal(true)} disabled={loading}>Add Delivery</Button>
       </div>
       <div className="d-flex flex-wrap gap-3 mb-3 small text-muted">
-        <div className="badge bg-secondary">Deliveries: {summary.count}</div>
-        <div className="badge bg-info">Total Delivered: {summary.qty}</div>
+        <div className="badge bg-secondary">Deliveries (page): {summary.count}</div>
+        <div className="badge bg-info">Total Delivered (page): {summary.qty}</div>
+        <div className="badge bg-light text-dark">Page {meta.page} of {meta.pages} • Total {meta.total}</div>
       </div>
       {error && <Alert variant="danger">{error}</Alert>}
       {success && <Alert variant="success">{success}</Alert>}
@@ -187,22 +204,79 @@ function Deliveries() {
               </tr>
             </thead>
             <tbody>
-              {(filtered || []).length === 0 ? (
+              {(deliveries || []).length === 0 ? (
                 <tr><td colSpan={6} className="text-center text-muted">No deliveries yet.</td></tr>
               ) : (
-                (filtered || []).map(d => (
+                (deliveries || []).map(d => (
                   <tr key={d.id}>
-                    <td>{d.delivery_date ? new Date(d.delivery_date).toLocaleDateString() : '-'}</td>
-                    <td>{d.recipient_name}</td>
-                    <td>{d.order_id ? `#${d.order_id} • ${d.customer_name || ''}` : '-'}</td>
-                    <td>{d.quantity_delivered}</td>
-                    <td>{d.address || ''}</td>
-                    <td>{d.notes || ''}</td>
+                    <td>
+                      {editingId === d.id ? (
+                        <Form.Control type="date" value={editForm.delivery_date} onChange={(e)=>setEditForm(prev=>({...prev, delivery_date:e.target.value}))} />
+                      ) : (d.delivery_date ? new Date(d.delivery_date).toLocaleDateString() : '-')}
+                    </td>
+                    <td>
+                      {editingId === d.id ? (
+                        <Form.Control value={editForm.recipient_name} onChange={(e)=>setEditForm(prev=>({...prev, recipient_name:e.target.value}))} />
+                      ) : d.recipient_name}
+                    </td>
+                    <td>
+                      {editingId === d.id ? (
+                        <Form.Select value={editForm.order_id} onChange={(e)=>setEditForm(prev=>({...prev, order_id:e.target.value}))}>
+                          <option value="">No order</option>
+                          {(orders||[]).map(o => (
+                            <option key={o.id} value={o.id}>#{o.id} • {o.customer_name}</option>
+                          ))}
+                        </Form.Select>
+                      ) : (d.order_id ? `#${d.order_id} • ${d.customer_name || ''}` : '-')}
+                    </td>
+                    <td>
+                      {editingId === d.id ? (
+                        <Form.Control type="number" min={1} value={editForm.quantity_delivered} onChange={(e)=>setEditForm(prev=>({...prev, quantity_delivered:e.target.value}))} />
+                      ) : d.quantity_delivered}
+                    </td>
+                    <td>
+                      {editingId === d.id ? (
+                        <Form.Control value={editForm.address} onChange={(e)=>setEditForm(prev=>({...prev, address:e.target.value}))} />
+                      ) : (d.address || '')}
+                    </td>
+                    <td>
+                      {editingId === d.id ? (
+                        <Form.Control value={editForm.notes} onChange={(e)=>setEditForm(prev=>({...prev, notes:e.target.value}))} />
+                      ) : (d.notes || '')}
+                    </td>
                     <td className="text-end">
                       <div className="btn-group btn-group-sm">
-                        <Button variant="outline-secondary" onClick={()=>exportRowPDF(d)}>PDF</Button>
-                        {currentUser?.role === 'admin' && (
-                          <Button variant="outline-danger" onClick={()=>removeDelivery(d.id)}>Delete</Button>
+                        {editingId === d.id ? (
+                          <>
+                            <Button variant="success" onClick={async ()=>{
+                              try {
+                                const payload = { ...editForm, order_id: editForm.order_id ? Number(editForm.order_id) : null, quantity_delivered: Number(editForm.quantity_delivered) };
+                                await api.put(`/deliveries/${d.id}`, payload);
+                                setSuccess('Delivery updated'); setTimeout(()=>setSuccess(''), 2000);
+                                setEditingId(null);
+                                await fetchAll(meta.page, meta.limit);
+                              } catch (err) {
+                                console.error('Error updating delivery', err);
+                                setError(err?.response?.data?.message || 'Error updating delivery');
+                              }
+                            }}>Save</Button>
+                            <Button variant="secondary" onClick={()=>{ setEditingId(null); }}>Cancel</Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button variant="outline-secondary" onClick={()=>exportRowPDF(d)}>PDF</Button>
+                            <Button variant="outline-primary" onClick={()=>{ setEditingId(d.id); setEditForm({
+                              order_id: d.order_id || '',
+                              delivery_date: d.delivery_date ? String(d.delivery_date).slice(0,10) : new Date().toISOString().slice(0,10),
+                              recipient_name: d.recipient_name || '',
+                              address: d.address || '',
+                              quantity_delivered: d.quantity_delivered || 1,
+                              notes: d.notes || ''
+                            }); }}>Edit</Button>
+                            {currentUser?.role === 'admin' && (
+                              <Button variant="outline-danger" onClick={()=>removeDelivery(d.id)}>Delete</Button>
+                            )}
+                          </>
                         )}
                       </div>
                     </td>
@@ -211,6 +285,16 @@ function Deliveries() {
               )}
             </tbody>
           </Table>
+          <div className="d-flex justify-content-between align-items-center mt-2">
+            <div className="small text-muted">Page {meta.page} of {meta.pages} | Total {meta.total} deliveries</div>
+            <div className="d-flex gap-2 align-items-center">
+              <Form.Select size="sm" value={meta.limit} onChange={(e)=>{ const lim = Number(e.target.value); setMeta(m=>({ ...m, limit: lim })); fetchAll(1, lim); }}>
+                {[10,20,50,100].map(sz => <option key={sz} value={sz}>{sz}/page</option>)}
+              </Form.Select>
+              <Button variant="outline-secondary" size="sm" disabled={meta.page<=1} onClick={()=>fetchAll(meta.page-1, meta.limit)}>Prev</Button>
+              <Button variant="outline-secondary" size="sm" disabled={meta.page>=meta.pages} onClick={()=>fetchAll(meta.page+1, meta.limit)}>Next</Button>
+            </div>
+          </div>
         </div>
       )}
 

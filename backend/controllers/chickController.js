@@ -3,10 +3,16 @@ const { ensureTables } = require('../config/dbInit');
 
 exports.getAllChicks = async (req, res, next) => {
   try {
-  const page = Number(req.query.page) || 1;
-  const limit = Number(req.query.limit) || 10;
-  const chicks = await ChickModel.findAll(page, limit);
-    res.json(chicks);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const offset = (page - 1) * limit;
+    const search = req.query.search || '';
+    const breed = req.query.breed || '';
+    const supplier = req.query.supplier || '';
+    const dateFrom = req.query.date_from || '';
+    const dateTo = req.query.date_to || '';
+    const { data, meta } = await ChickModel.findPaged({ offset, limit, search, breed, supplier, dateFrom, dateTo });
+    res.json({ data, meta });
   } catch (err) {
     next(err);
   }
@@ -24,7 +30,6 @@ exports.addChick = async (req, res, next) => {
 exports.updateChick = async (req, res, next) => {
   try {
     const { id } = req.params;
-    // You need to implement updateChick in your model
     const updatedChick = await ChickModel.update(id, req.body);
     res.json({ message: 'Chick updated successfully', updatedChick });
   } catch (err) {
@@ -35,7 +40,9 @@ exports.updateChick = async (req, res, next) => {
 exports.deleteChick = async (req, res, next) => {
   try {
     const { id } = req.params;
-    // You need to implement delete in your model
+    if (req.userRole !== 'admin') {
+      return res.status(403).json({ message: 'Only admin can delete chick batches' });
+    }
     await ChickModel.delete(id);
     res.json({ message: 'Chick deleted successfully' });
   } catch (err) {
@@ -100,7 +107,10 @@ exports.getBatchFeedUsage = async (req, res, next) => {
     const dateExpr = hasDateUsed ? 'fu.date_used' : 'NULL';
 
     const [rows] = await db.query(
-      `SELECT fu.id, fu.feed_id, f.type, ${quantityExpr} AS quantity_used, ${dateExpr} AS date_used, fu.used_at
+      `SELECT fu.id, fu.feed_id, fu.batch_id, f.type,
+              ${quantityExpr} AS quantity_used,
+              ${dateExpr} AS date_used,
+              fu.used_at
          FROM feed_usage fu
          JOIN feeds f ON fu.feed_id = f.id
         WHERE fu.batch_id = ?
@@ -127,7 +137,10 @@ exports.getBatchFeedUsage = async (req, res, next) => {
         const quantityExpr = hasQuantityUsed ? 'fu.quantity_used' : (colSet.has('amount_used') ? 'fu.amount_used' : 'NULL');
         const dateExpr = hasDateUsed ? 'fu.date_used' : 'NULL';
         const [rows] = await db.query(
-          `SELECT fu.id, fu.feed_id, f.type, ${quantityExpr} AS quantity_used, ${dateExpr} AS date_used, fu.used_at
+          `SELECT fu.id, fu.feed_id, fu.batch_id, f.type,
+                  ${quantityExpr} AS quantity_used,
+                  ${dateExpr} AS date_used,
+                  fu.used_at
              FROM feed_usage fu
              JOIN feeds f ON fu.feed_id = f.id
             WHERE fu.batch_id = ?

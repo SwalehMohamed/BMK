@@ -7,6 +7,25 @@ exports.getAll = async (req, res, next) => {
   try {
     if (req.userRole !== 'admin') return res.status(403).json({ message: 'Only admin can access sales' });
 
+    // pagination params
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+
+    // optional filters
+    const customer = req.query.customer || '';
+    const statusFilter = req.query.status || '';
+    const dateFrom = req.query.date_from || '';
+    const dateTo = req.query.date_to || '';
+
+    const filters = [];
+    const params = [];
+    if (customer && String(customer).trim() !== '') { filters.push('o.customer_name LIKE ?'); params.push(`%${customer}%`); }
+    if (statusFilter && String(statusFilter).trim() !== '') { filters.push('o.status = ?'); params.push(statusFilter); }
+    if (dateFrom) { filters.push('o.order_date >= ?'); params.push(dateFrom); }
+    if (dateTo) { filters.push('o.order_date <= ?'); params.push(dateTo); }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
     // fetch orders and compute delivered sums and status
     const [rows] = await db.query(`
       SELECT 
@@ -24,8 +43,12 @@ exports.getAll = async (req, res, next) => {
       FROM orders o
       LEFT JOIN products p ON p.id = o.product_id
       LEFT JOIN product_types t ON t.name = LCASE(COALESCE(o.product_type, p.type))
+      ${where}
       ORDER BY o.order_date DESC, o.id DESC
-    `);
+      LIMIT ? OFFSET ?
+    `, [...params, limit, offset]);
+
+    const [[countRow]] = await db.query(`SELECT COUNT(*) AS cnt FROM orders o ${where}`, params);
 
     // map to friendly status and compute sale value based on delivered quantity * product type price
     const mapped = rows.map(r => {
@@ -48,7 +71,7 @@ exports.getAll = async (req, res, next) => {
       };
     });
 
-    res.json(mapped);
+    res.json({ data: mapped, meta: { page, limit, total: countRow?.cnt || 0, pages: Math.ceil((countRow?.cnt || 0) / limit) } });
   } catch (err) {
     next(err);
   }

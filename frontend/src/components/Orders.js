@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 function Orders() {
   const { currentUser } = useAuth();
   const [orders, setOrders] = useState([]);
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, pages: 0 });
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -30,25 +31,51 @@ function Orders() {
 
   const productOptions = useMemo(() => (products || []).map(p => ({ value: p.id, label: `${p.type} (Batch ${p.batch_id ?? '-'}) • Avail: ${p.available_qty ?? p.packaged_quantity}` })), [products]);
 
-  const fetchAll = async () => {
-    setLoading(true);
+  const fetchOrders = async (page = meta.page, limit = meta.limit) => {
     try {
-      const [oRes, pRes] = await Promise.all([
-        api.get('/orders'),
-        api.get('/products'),
-      ]);
-      setOrders(oRes.data || []);
-      setProducts(pRes.data || []);
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(limit));
+      if (filters.status) params.set('status', filters.status);
+      if (filters.customer) params.set('customer', filters.customer);
+      if (filters.dateFrom) params.set('date_from', filters.dateFrom);
+      if (filters.dateTo) params.set('date_to', filters.dateTo);
+      const oRes = await api.get(`/orders?${params.toString()}`);
+      if (oRes.data?.data) {
+        setOrders(oRes.data.data);
+        if (oRes.data.meta) setMeta(oRes.data.meta);
+      } else {
+        setOrders(oRes.data || []);
+        setMeta(m => ({ ...m, total: (oRes.data || []).length, pages: 1 }));
+      }
       setError('');
     } catch (err) {
-      console.error('Error fetching orders/products', err);
+      console.error('Error fetching orders', err);
       setError(err?.response?.data?.message || 'Error fetching orders');
-    } finally {
-      setLoading(false);
     }
   };
 
-  useEffect(() => { fetchAll(); }, []);
+  const fetchProducts = async () => {
+    try {
+      const pRes = await api.get('/products');
+      setProducts(pRes.data || []);
+    } catch (err) {
+      console.error('Error fetching products', err);
+    }
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([fetchProducts(), fetchOrders(1, meta.limit)])
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // refetch on filter changes, reset to page 1
+    fetchOrders(1, meta.limit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.status, filters.customer, filters.dateFrom, filters.dateTo]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -64,7 +91,7 @@ function Orders() {
       setTimeout(() => setSuccess(''), 2500);
       setShowModal(false);
       setForm({ order_date: new Date().toISOString().slice(0,10), customer_name: '', product_type: '', product_id: '', quantity: '', unit_price: '', status: 'pending', notes: '' });
-      await fetchAll();
+      await fetchOrders(1, meta.limit);
     } catch (err) {
       console.error('Error creating order', err);
       setError(err?.response?.data?.message || 'Error creating order');
@@ -100,7 +127,7 @@ function Orders() {
       setTimeout(() => setSuccess(''), 2000);
       setShowEdit(false);
       setEditId(null);
-      await fetchAll();
+      await fetchOrders(meta.page, meta.limit);
     } catch (err) {
       console.error('Error updating order', err);
       setError(err?.response?.data?.message || 'Error updating order');
@@ -113,25 +140,14 @@ function Orders() {
       await api.delete(`/orders/${id}`);
       setSuccess('Order deleted');
       setTimeout(() => setSuccess(''), 2000);
-      await fetchAll();
+      await fetchOrders(meta.page, meta.limit);
     } catch (err) {
       console.error('Error deleting order', err);
       setError(err?.response?.data?.message || 'Error deleting order');
     }
   };
 
-  const filtered = useMemo(() => {
-    const df = filters.dateFrom ? new Date(filters.dateFrom) : null;
-    const dt = filters.dateTo ? new Date(filters.dateTo) : null;
-    return (orders || []).filter(o => {
-      const sOk = filters.status ? String(o.status).toLowerCase() === String(filters.status).toLowerCase() : true;
-      const cOk = filters.customer ? String(o.customer_name || '').toLowerCase().includes(filters.customer.toLowerCase()) : true;
-      const d = o.order_date ? new Date(o.order_date) : null;
-      const dfOk = df ? (d && d >= df) : true;
-      const dtOk = dt ? (d && d <= dt) : true;
-      return sOk && cOk && dfOk && dtOk;
-    });
-  }, [orders, filters]);
+  const filtered = orders; // server-side filtered/paginated
 
   const summary = useMemo(() => {
     const count = filtered.length;
@@ -271,7 +287,7 @@ function Orders() {
             </thead>
             <tbody>
               {(filtered || []).length === 0 ? (
-                <tr><td colSpan={8} className="text-center text-muted">No orders yet.</td></tr>
+                <tr><td colSpan={10} className="text-center text-muted">No orders found.</td></tr>
               ) : (
                 (filtered || []).map(o => (
                   <tr key={o.id}>
@@ -302,6 +318,20 @@ function Orders() {
               )}
             </tbody>
           </Table>
+        </div>
+      )}
+
+      {/* Pagination controls */}
+      {!loading && (
+        <div className="d-flex justify-content-between align-items-center mt-2">
+          <div className="small text-muted">Page {meta.page} of {meta.pages} | Total {meta.total} orders</div>
+          <div className="d-flex gap-2 align-items-center">
+            <Form.Select size="sm" value={meta.limit} onChange={(e)=>{ const lim = Number(e.target.value); setMeta(m=>({...m, limit: lim })); fetchOrders(1, lim); }}>
+              {[10,20,50,100].map(sz => <option key={sz} value={sz}>{sz}/page</option>)}
+            </Form.Select>
+            <Button variant="outline-secondary" size="sm" disabled={meta.page<=1} onClick={()=>fetchOrders(meta.page-1, meta.limit)}>Prev</Button>
+            <Button variant="outline-secondary" size="sm" disabled={meta.page>=meta.pages} onClick={()=>fetchOrders(meta.page+1, meta.limit)}>Next</Button>
+          </div>
         </div>
       )}
 

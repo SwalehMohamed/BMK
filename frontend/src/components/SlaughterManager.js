@@ -12,10 +12,13 @@ import {
   Legend,
 } from 'recharts';
 import api from '../services/api';
+import { buildCsv, downloadCsv, exportPdfTable, fetchAllForExport } from '../utils/export';
+// PDF autotable is imported lazily in export util
 
 function SlaughterManager() {
   const navigate = useNavigate();
   const [slaughters, setSlaughters] = useState([]);
+  const [chartSlaughters, setChartSlaughters] = useState([]);
   const [products, setProducts] = useState([]);
   // Removed products table from this page
   const [showModal, setShowModal] = useState(false);
@@ -43,8 +46,11 @@ function SlaughterManager() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(true);
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const [meta, setMeta] = useState({ page: 1, limit: 10, total: 0, pages: 0 });
+  const [filters, setFilters] = useState({ search: '', batchId: '', dateFrom: '', dateTo: '' });
+  const [batches, setBatches] = useState([]);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ batch_id: '', date: '', quantity: '', avg_weight: '' });
 
   // Delete slaughter record handler (must be inside component for hooks)
   const handleDeleteSlaughter = async (id) => {
@@ -60,16 +66,44 @@ function SlaughterManager() {
   };
 
 useEffect(() => {
-  fetchSlaughters();
+  fetchSlaughters(1, meta.limit);
   fetchProducts();
+  fetchBatches();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
 }, []);
 
-const fetchSlaughters = async () => {
+useEffect(() => {
+  // refetch list and chart when filters change
+  fetchSlaughters(1, meta.limit);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [filters.search, filters.batchId, filters.dateFrom, filters.dateTo]);
+
+const fetchSlaughters = async (page = meta.page, limit = meta.limit) => {
   setLoading(true);
   try {
-    const response = await api.get('/slaughtered');
-    setSlaughters(response.data || []);
+    const params = new URLSearchParams();
+    params.set('page', String(page)); params.set('limit', String(limit));
+    if (filters.search) params.set('search', filters.search);
+    if (filters.batchId) params.set('batch_id', filters.batchId);
+    if (filters.dateFrom) params.set('date_from', filters.dateFrom);
+    if (filters.dateTo) params.set('date_to', filters.dateTo);
+    const response = await api.get(`/slaughtered?${params.toString()}`);
+    if (response.data?.data) {
+      setSlaughters(response.data.data);
+      if (response.data.meta) setMeta(response.data.meta);
+    } else {
+      const arr = response.data || [];
+      setSlaughters(arr);
+      setMeta(m => ({ ...m, total: arr.length, pages: 1 }));
+    }
     setError('');
+    // fetch expanded set for charts (limit 1000)
+    try {
+      const params2 = new URLSearchParams(params);
+      params2.set('page','1'); params2.set('limit','1000');
+      const forChart = await api.get(`/slaughtered?${params2.toString()}`);
+      setChartSlaughters(forChart.data?.data || forChart.data || []);
+    } catch(_) { setChartSlaughters([]); }
   } catch (error) {
     setError('Error fetching chicken slaughters');
     console.error('Error fetching chicken slaughters:', error);
@@ -81,12 +115,19 @@ const fetchSlaughters = async () => {
 
 const fetchProducts = async () => {
   try {
-    const res = await api.get('/products');
-    setProducts(res.data || []);
+    const res = await api.get('/products?page=1&limit=1000');
+    setProducts(res.data?.data || res.data || []);
   } catch (e) {
     // Keep products empty on failure
     setProducts([]);
   }
+};
+
+const fetchBatches = async () => {
+  try {
+    const res = await api.get('/chicks?limit=1000');
+    setBatches(res.data?.data || []);
+  } catch (e) { setBatches([]); }
 };
 
 const handleSlaughterSubmit = async (e) => {
@@ -166,8 +207,8 @@ const saveProduct = async (e) => {
 
     // Quick-view products for this batch to confirm visibility
     try {
-      const resp = await api.get('/products');
-      const list = (resp.data || []).filter(p => String(p.batch_id || '') === String(productForm.batch_id || ''));
+      const resp = await api.get(`/products?batch_id=${encodeURIComponent(productForm.batch_id || '')}&limit=1000`);
+      const list = (resp.data?.data || resp.data || []).filter(p => String(p.batch_id || '') === String(productForm.batch_id || ''));
       setQuickViewBatchId(productForm.batch_id || '');
       setQuickViewList(list);
       setShowQuickView(true);
@@ -179,6 +220,50 @@ const saveProduct = async (e) => {
     setError(err?.response?.data?.message || 'Error creating product');
   }
 };
+
+  // Export helpers (use current filters)
+  // CSV escaping handled by shared utils (buildCsv)
+
+  const exportSlaughterCSV = async () => {
+    try {
+      const rows = await fetchAllForExport('/slaughtered', {
+        search: filters.search,
+        batch_id: filters.batchId,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo
+      });
+      const header = ['Batch','Date','Quantity','Avg Weight','Notes'];
+      const body = rows.map(r => [
+        r.batch_name || `#${r.batch_id}`,
+        r.date ? new Date(r.date).toISOString().slice(0,10) : '',
+        r.quantity,
+        (r.avg_weight ?? ''),
+        (r.notes || '')
+      ]);
+      const csv = buildCsv(header, body);
+      downloadCsv(csv, 'slaughtered');
+    } catch (err) { setError('Error exporting CSV'); }
+  };
+
+  const exportSlaughterPDF = async () => {
+    try {
+      const rows = await fetchAllForExport('/slaughtered', {
+        search: filters.search,
+        batch_id: filters.batchId,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo
+      });
+      const head = [['Batch','Date','Quantity','Avg Wt','Notes']];
+      const body = rows.map(r => [
+        r.batch_name || `#${r.batch_id}`,
+        r.date ? new Date(r.date).toLocaleDateString() : '-',
+        r.quantity,
+        r.avg_weight ?? '-',
+        (r.notes || '').slice(0,40)
+      ]);
+      exportPdfTable({ title: 'Slaughter Records', head, body, fileName: 'slaughtered', headColor: [44,160,44] });
+    } catch (err) { setError('Error exporting PDF'); }
+  };
 
   return (
     <>
@@ -195,13 +280,29 @@ const saveProduct = async (e) => {
               <h4>Slaughter Records</h4>
               <Button variant="primary" onClick={() => setShowModal(true)}>Add Slaughter</Button>
               <div className="row g-2 mt-2">
+                <div className="col-md-3">
+                  <label className="form-label small">Search</label>
+                  <input type="text" className="form-control form-control-sm" placeholder="batch or notes…" value={filters.search} onChange={(e)=>setFilters(f=>({...f,search:e.target.value}))} />
+                </div>
+                <div className="col-md-2">
+                  <label className="form-label small">Batch</label>
+                  <select className="form-select form-select-sm" value={filters.batchId} onChange={(e)=>setFilters(f=>({...f,batchId:e.target.value}))}>
+                    <option value="">All</option>
+                    {(batches||[]).map(b => <option key={b.id} value={b.id}>{b.batch_name}</option>)}
+                  </select>
+                </div>
                 <div className="col-md-2">
                   <label className="form-label small">From</label>
-                  <input type="date" className="form-control form-control-sm" value={fromDate} onChange={(e)=>setFromDate(e.target.value)} />
+                  <input type="date" className="form-control form-control-sm" value={filters.dateFrom} onChange={(e)=>setFilters(f=>({...f,dateFrom:e.target.value}))} />
                 </div>
                 <div className="col-md-2">
                   <label className="form-label small">To</label>
-                  <input type="date" className="form-control form-control-sm" value={toDate} onChange={(e)=>setToDate(e.target.value)} />
+                  <input type="date" className="form-control form-control-sm" value={filters.dateTo} onChange={(e)=>setFilters(f=>({...f,dateTo:e.target.value}))} />
+                </div>
+                <div className="col-md-3 d-flex align-items-end gap-2">
+                  <Button size="sm" variant="secondary" onClick={()=>setFilters({ search:'', batchId:'', dateFrom:'', dateTo:'' })}>Reset</Button>
+                  <Button size="sm" variant="outline-primary" onClick={exportSlaughterCSV}>CSV</Button>
+                  <Button size="sm" variant="outline-primary" onClick={exportSlaughterPDF}>PDF</Button>
                 </div>
               </div>
               <div className="card mt-3 mb-3">
@@ -209,7 +310,7 @@ const saveProduct = async (e) => {
                   <h6 className="mb-2">Slaughtered per Batch</h6>
                   <div style={{width:'100%', height:300}}>
                     <ResponsiveContainer>
-                      <BarChart data={aggregatePerBatch(slaughters, fromDate, toDate)}>
+                      <BarChart data={aggregatePerBatch(chartSlaughters, filters.dateFrom, filters.dateTo)}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="batch" interval={0} angle={-30} textAnchor="end" height={60} />
                         <YAxis />
@@ -226,7 +327,7 @@ const saveProduct = async (e) => {
                   <h6 className="mb-2">Products per Batch (packaged)</h6>
                   <div style={{width:'100%', height:260}}>
                     <ResponsiveContainer>
-                      <BarChart data={aggregateProductsPerBatch(products)}>
+                      <BarChart data={aggregateProductsPerBatch(products, filters.dateFrom, filters.dateTo, filters.batchId)}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="batch" interval={0} angle={-30} textAnchor="end" height={60} />
                         <YAxis />
@@ -251,20 +352,72 @@ const saveProduct = async (e) => {
                 <tbody>
                   {Array.isArray(slaughters) && slaughters.map((s) => (
                     <tr key={s.id}>
-                      <td>{s.batch_name || `Batch #${s.batch_id}`}</td>
-                      <td>{new Date(s.date).toLocaleDateString()}</td>
-                      <td>{s.quantity}</td>
-                      <td>{s.avg_weight ?? '-'}</td>
+                      <td>
+                        {editingId === s.id ? (
+                          <Form.Control value={editForm.batch_id} onChange={(e)=>setEditForm(prev=>({...prev,batch_id:e.target.value}))} />
+                        ) : (s.batch_name || `Batch #${s.batch_id}`)}
+                      </td>
+                      <td>
+                        {editingId === s.id ? (
+                          <Form.Control type="date" value={editForm.date} onChange={(e)=>setEditForm(prev=>({...prev,date:e.target.value}))} />
+                        ) : new Date(s.date).toLocaleDateString()}
+                      </td>
+                      <td>
+                        {editingId === s.id ? (
+                          <Form.Control type="number" min={1} value={editForm.quantity} onChange={(e)=>setEditForm(prev=>({...prev,quantity:e.target.value}))} />
+                        ) : s.quantity}
+                      </td>
+                      <td>
+                        {editingId === s.id ? (
+                          <Form.Control type="number" min={0} step={0.01} value={editForm.avg_weight} onChange={(e)=>setEditForm(prev=>({...prev,avg_weight:e.target.value}))} />
+                        ) : (s.avg_weight ?? '-')}
+                      </td>
                       <td className="text-end">
                         <div className="btn-group btn-group-sm">
-                          <Button variant="outline-success" onClick={() => openCreateProduct(s)}>Create Product</Button>
-                          <Button variant="outline-danger" onClick={() => handleDeleteSlaughter(s.id)}>Delete</Button>
+                          {editingId === s.id ? (
+                            <>
+                              <Button variant="success" onClick={async ()=>{
+                                try {
+                                  const payload = {
+                                    batch_id: editForm.batch_id ? Number(editForm.batch_id) : Number(s.batch_id),
+                                    date: editForm.date || s.date,
+                                    quantity: Number(editForm.quantity),
+                                    avg_weight: editForm.avg_weight ? Number(editForm.avg_weight) : null
+                                  };
+                                  await api.put(`/slaughtered/${s.id}`, payload);
+                                  setSuccess('Slaughter record updated'); setTimeout(()=>setSuccess(''), 2000);
+                                  setEditingId(null);
+                                  fetchSlaughters();
+                                } catch (err) {
+                                  setError(err?.response?.data?.message || 'Error updating slaughter record');
+                                }
+                              }}>Save</Button>
+                              <Button variant="secondary" onClick={()=>setEditingId(null)}>Cancel</Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button variant="outline-secondary" onClick={() => openCreateProduct(s)}>Create Product</Button>
+                              <Button variant="outline-primary" onClick={() => { setEditingId(s.id); setEditForm({ batch_id: s.batch_id || '', date: String(s.date).slice(0,10), quantity: s.quantity, avg_weight: s.avg_weight ?? '' }); }}>Edit</Button>
+                              <Button variant="outline-danger" onClick={() => handleDeleteSlaughter(s.id)}>Delete</Button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </Table>
+              {/* Pagination */}
+              <div className="d-flex justify-content-between align-items-center mt-2">
+                <div className="small text-muted">Page {meta.page} of {meta.pages} | Total {meta.total}</div>
+                <div className="d-flex gap-2 align-items-center">
+                  <Form.Select size="sm" value={meta.limit} onChange={(e)=>{ const lim = Number(e.target.value); setMeta(m=>({...m,limit:lim})); fetchSlaughters(1, lim); }}>
+                    {[10,20,50,100].map(sz => <option key={sz} value={sz}>{sz}/page</option>)}
+                  </Form.Select>
+                  <Button size="sm" variant="outline-secondary" disabled={meta.page<=1} onClick={()=>fetchSlaughters(meta.page-1, meta.limit)}>Prev</Button>
+                  <Button size="sm" variant="outline-secondary" disabled={meta.page>=meta.pages} onClick={()=>fetchSlaughters(meta.page+1, meta.limit)}>Next</Button>
+                </div>
+              </div>
             </Col>
           </Row>
         )}
@@ -618,11 +771,19 @@ function aggregatePerBatch(rows, fromDate, toDate) {
   return Array.from(map.entries()).map(([batch, quantity]) => ({ batch, quantity }));
 }
 
-function aggregateProductsPerBatch(products) {
+function aggregateProductsPerBatch(products, fromDate, toDate, batchFilter) {
   const map = new Map();
+  const df = fromDate ? new Date(fromDate) : null;
+  const dt = toDate ? new Date(toDate) : null;
   (products || []).forEach(p => {
+    // date filter applies to created_at if available
+    const d = p.created_at ? new Date(p.created_at) : null;
+    if (df && (!d || d < df)) return;
+    if (dt && (!d || d > dt)) return;
+    if (batchFilter && String(p.batch_id || '') !== String(batchFilter)) return;
     const key = p.batch_name || (p.batch_id ? `#${p.batch_id}` : 'Unlinked');
     map.set(key, (map.get(key) || 0) + Number(p.packaged_quantity || 0));
   });
   return Array.from(map.entries()).map(([batch, packaged]) => ({ batch, packaged }));
 }
+

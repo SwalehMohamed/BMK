@@ -54,8 +54,15 @@ const { AppError } = require('../utils/errors');
 
 exports.getAllSlaughtered = async (req, res, next) => {
   try {
-    const slaughtered = await SlaughteredModel.findAll();
-    res.json(slaughtered);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+    const batchId = req.query.batch_id || '';
+    const dateFrom = req.query.date_from || '';
+    const dateTo = req.query.date_to || '';
+    const search = req.query.search || '';
+    const { data, meta } = await SlaughteredModel.findPaged({ offset, limit, batchId, dateFrom, dateTo, search });
+    res.json({ data, meta });
   } catch (err) {
     next(err);
   }

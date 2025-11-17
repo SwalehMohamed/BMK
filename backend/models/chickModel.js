@@ -8,14 +8,31 @@ class ChickModel {
     return { id: result.insertId, ...batch };
   }
 
-  // Get all chick batches with mortality stats (JOIN query)
+  // Legacy simple fetch retained for backward compatibility
   static async findAll(page = 1, limit = 10) {
-    const p = Number(page) || 1;
-    const l = Number(limit) || 10;
-    const offset = (p - 1) * l;
-    
-    // Use aggregated subqueries to avoid row multiplication when joining multiple child tables
-    const [batches] = await db.query(`
+    return this.findPaged({
+      offset: (Number(page || 1) - 1) * Number(limit || 10),
+      limit: Number(limit || 10),
+      search: '', breed: '', supplier: '', dateFrom: null, dateTo: null
+    });
+  }
+
+  // New paginated & filterable fetch
+  static async findPaged({ offset = 0, limit = 10, search = '', breed = '', supplier = '', dateFrom = null, dateTo = null }) {
+    const filters = [];
+    const params = [];
+    if (search && String(search).trim() !== '') {
+      filters.push('(c.batch_name LIKE ? OR c.breed LIKE ? OR c.supplier LIKE ?)');
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+    if (breed && String(breed).trim() !== '') { filters.push('c.breed LIKE ?'); params.push(`%${breed}%`); }
+    if (supplier && String(supplier).trim() !== '') { filters.push('c.supplier LIKE ?'); params.push(`%${supplier}%`); }
+    if (dateFrom) { filters.push('c.arrival_date >= ?'); params.push(dateFrom); }
+    if (dateTo) { filters.push('c.arrival_date <= ?'); params.push(dateTo); }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
+    // aggregated subqueries for deaths & slaughtered
+    const [rows] = await db.query(`
       SELECT 
         c.*,
         IFNULL(ml.total_deaths, 0) AS total_deaths,
@@ -24,28 +41,38 @@ class ChickModel {
       FROM chicks c
       LEFT JOIN (
         SELECT chick_batch_id, SUM(number_dead) AS total_deaths
-        FROM mortality_logs
-        GROUP BY chick_batch_id
+          FROM mortality_logs
+         GROUP BY chick_batch_id
       ) ml ON c.id = ml.chick_batch_id
       LEFT JOIN (
         SELECT batch_id, SUM(quantity) AS total_slaughtered
-        FROM slaughtered
-        GROUP BY batch_id
+          FROM slaughtered
+         GROUP BY batch_id
       ) sl ON c.id = sl.batch_id
+      ${where}
+      ORDER BY c.arrival_date DESC, c.id DESC
       LIMIT ? OFFSET ?
-    `, [l, offset]);
+    `, [...params, Number(limit), Number(offset)]);
 
-    const [count] = await db.query('SELECT COUNT(*) AS total FROM chicks');
-    
+    const [[countRow]] = await db.query(`SELECT COUNT(*) AS cnt FROM chicks c ${where}`, params);
+    const total = countRow?.cnt || 0;
     return {
-      data: batches,
-      pagination: {
-        page: p,
-        limit: l,
-        total: count[0].total,
-        totalPages: Math.ceil(count[0].total / l)
-      }
+      data: rows,
+      meta: { page: Math.floor(offset / limit) + 1, limit: Number(limit), total, pages: Math.ceil(total / Number(limit)) }
     };
+  }
+
+  static async count(filters) { // not used directly but provided for parity
+    const { search = '', breed = '', supplier = '', dateFrom = null, dateTo = null } = filters || {};
+    const f = []; const p = [];
+    if (search && String(search).trim() !== '') { f.push('(batch_name LIKE ? OR breed LIKE ? OR supplier LIKE ?)'); p.push(`%${search}%`,`%${search}%`,`%${search}%`); }
+    if (breed && String(breed).trim() !== '') { f.push('breed LIKE ?'); p.push(`%${breed}%`); }
+    if (supplier && String(supplier).trim() !== '') { f.push('supplier LIKE ?'); p.push(`%${supplier}%`); }
+    if (dateFrom) { f.push('arrival_date >= ?'); p.push(dateFrom); }
+    if (dateTo) { f.push('arrival_date <= ?'); p.push(dateTo); }
+    const where = f.length ? `WHERE ${f.join(' AND ')}` : '';
+    const [[row]] = await db.query(`SELECT COUNT(*) AS cnt FROM chicks ${where}`, p);
+    return row?.cnt || 0;
   }
 
   // Record chick mortality
@@ -68,11 +95,23 @@ class ChickModel {
   }
 
   static async update(id, batch) {
-    await db.query('UPDATE chicks SET ? WHERE id = ?', [batch, id]);
-    return { id, ...batch };
+    const patch = { ...batch };
+    if (patch.initial_count != null) {
+      const ic = Number(patch.initial_count);
+      if (!Number.isInteger(ic) || ic <= 0) throw new AppError('initial_count must be a positive integer', 400);
+      patch.initial_count = ic;
+    }
+    await db.query('UPDATE chicks SET ? WHERE id = ?', [patch, id]);
+    return { id, ...patch };
   }
 
   static async delete(id) {
+    // Prevent deletion if dependent records exist (mortality or slaughtered) to avoid orphan history
+    const [[dep1]] = await db.query('SELECT COUNT(*) AS cnt FROM mortality_logs WHERE chick_batch_id = ?', [id]);
+    const [[dep2]] = await db.query('SELECT COUNT(*) AS cnt FROM slaughtered WHERE batch_id = ?', [id]);
+    if ((dep1?.cnt || 0) > 0 || (dep2?.cnt || 0) > 0) {
+      throw new AppError('Cannot delete batch with existing mortality or slaughter records', 400);
+    }
     await db.query('DELETE FROM chicks WHERE id = ?', [id]);
   }
 

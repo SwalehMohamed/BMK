@@ -5,11 +5,19 @@ import api from '../services/api';
 function UserManager() {
   const [users, setUsers] = useState([]);
   const [showModal, setShowModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [userData, setUserData] = useState({
     name: '',
     email: '',
     password: '',
     role: 'user'
+  });
+  const [editUserId, setEditUserId] = useState(null);
+  const [editData, setEditData] = useState({
+    name: '',
+    email: '',
+    role: 'user',
+    password: '' // optional; if provided will reset password
   });
   const [errors, setErrors] = useState({});
   const [success, setSuccess] = useState('');
@@ -66,6 +74,35 @@ function UserManager() {
     }
   };
 
+  const openEdit = (user) => {
+    setEditUserId(user.id);
+    setEditData({ name: user.name || '', email: user.email || '', role: user.role || 'user', password: '' });
+    setErrors({});
+    setShowEditModal(true);
+  };
+
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = { name: editData.name, email: editData.email, role: editData.role };
+      if (editData.password && editData.password.trim() !== '') payload.password = editData.password;
+      await api.put(`/users/${editUserId}`, payload);
+      setShowEditModal(false);
+      setEditUserId(null);
+      setEditData({ name: '', email: '', role: 'user', password: '' });
+      setSuccess('User updated successfully');
+      setTimeout(() => setSuccess(''), 3000);
+      fetchUsers();
+    } catch (error) {
+      console.error('Error updating user:', error);
+      if (error.response && error.response.data && error.response.data.message) {
+        setErrors({ general: error.response.data.message });
+      } else {
+        setErrors({ general: 'Failed to update user' });
+      }
+    }
+  };
+
   return (
     <div className="container mt-4">
       <div className="d-flex justify-content-between mb-4">
@@ -93,7 +130,7 @@ function UserManager() {
               <td>{user.email}</td>
               <td>{user.role}</td>
               <td>
-                <Button variant="info" size="sm" className="me-1">Edit</Button>
+                <Button variant="info" size="sm" className="me-1" onClick={() => openEdit(user)}>Edit</Button>
                 <Button variant="danger" size="sm" onClick={() => handleDelete(user.id)}>Delete</Button>
               </td>
             </tr>
@@ -166,6 +203,63 @@ function UserManager() {
 
             <Button variant="primary" type="submit">
               Create User
+            </Button>
+          </Form>
+        </Modal.Body>
+      </Modal>
+
+      {/* Edit User Modal */}
+      <Modal show={showEditModal} onHide={() => setShowEditModal(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Edit User</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form onSubmit={saveEdit}>
+            {errors.general && <Alert variant="danger">{errors.general}</Alert>}
+
+            <Form.Group controlId="edit_name" className="mb-3">
+              <Form.Label>Full Name</Form.Label>
+              <Form.Control
+                type="text"
+                value={editData.name}
+                onChange={(e) => setEditData({ ...editData, name: e.target.value })}
+                required
+              />
+            </Form.Group>
+
+            <Form.Group controlId="edit_email" className="mb-3">
+              <Form.Label>Email</Form.Label>
+              <Form.Control
+                type="email"
+                value={editData.email}
+                onChange={(e) => setEditData({ ...editData, email: e.target.value })}
+                required
+              />
+            </Form.Group>
+
+            <Form.Group controlId="edit_role" className="mb-3">
+              <Form.Label>Role</Form.Label>
+              <Form.Select
+                value={editData.role}
+                onChange={(e) => setEditData({ ...editData, role: e.target.value })}
+              >
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </Form.Select>
+            </Form.Group>
+
+            <Form.Group controlId="edit_password" className="mb-3">
+              <Form.Label>Reset Password (optional)</Form.Label>
+              <Form.Control
+                type="password"
+                value={editData.password}
+                onChange={(e) => setEditData({ ...editData, password: e.target.value })}
+                placeholder="Leave blank to keep current password"
+              />
+            </Form.Group>
+
+            <Button variant="primary" type="submit">
+              Save Changes
             </Button>
           </Form>
         </Modal.Body>

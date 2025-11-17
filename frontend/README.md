@@ -1,70 +1,123 @@
-# Getting Started with Create React App
+# Bin Masud Kuku – Frontend Guide
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This frontend is a React app (Create React App) for Bin Masud Kuku’s operations dashboard. It integrates with the Node/Express backend and supports editing, pagination, filters/search, and inventory constraints across modules.
 
-## Available Scripts
+## Standard list response shape
 
-In the project directory, you can run:
+All paginated list endpoints return the same structure:
 
-### `npm start`
+```json
+{
+  "data": [ /* array of rows */ ],
+  "meta": {
+    "page": 1,
+    "limit": 20,
+    "total": 123,
+    "pages": 7
+  }
+}
+```
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+If an endpoint hasn’t been converted yet, it may return a plain array. The UI handles both, but new code should follow the `{ data, meta }` shape.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## Supported query params by module
 
-### `npm test`
+These are accepted as query string parameters on GET list endpoints:
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+- Orders (`GET /orders`)
+  - `page`, `limit`
+  - `customer` (substring match)
+  - `status` in: `pending|confirmed|fulfilled|cancelled`
+  - `product_type` (matches order.product_type or linked product’s type)
+  - `date_from`, `date_to` (inclusive; YYYY-MM-DD)
 
-### `npm run build`
+- Sales (`GET /sales`)
+  - `page`, `limit`
+  - `customer` (substring match)
+  - `status` in: `Pending Delivery|Partial|Delivered`
+  - `date_from`, `date_to` (inclusive; YYYY-MM-DD)
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+- Deliveries (`GET /deliveries`)
+  - `page`, `limit`
+  - `order_id` (exact)
+  - `recipient` (substring match)
+  - `date_from`, `date_to` (inclusive; YYYY-MM-DD)
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+- Mortalities (`GET /mortalities`)
+  - `page`, `limit`
+  - `search` (substring match on notes/batch if supported)
+  - `date_from`, `date_to` (inclusive; YYYY-MM-DD)
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+- Feed usage (`GET /feeds/:id/usage`)
+  - `page`, `limit`
+  - `search` (substring match on notes/actor if supported)
+  - `date_from`, `date_to` (inclusive; YYYY-MM-DD)
 
-### `npm run eject`
+- Chicks (`GET /chicks`)
+  - `page`, `limit`
+  - `search` (batch name, breed, supplier)
+  - `breed` (substring match)
+  - `supplier` (substring match)
+  - `date_from`, `date_to` (arrival_date range)
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+Notes:
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+- When filters change, the UI resets to page 1 and refetches.
+- `limit` is capped at 100 server-side.
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+## Role-based restrictions
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+- Admin-only operations:
+  - Delete destructive actions across modules (e.g., delete orders/deliveries/feeds/users).
+  - Manage users (update/delete via `/users/:id`). Self-deletion is blocked to prevent lockout.
 
-## Learn More
+- Regular users:
+  - Can view data and create/edit where permitted by module rules.
+  - Authentication is via JWT; API requests include the token in `Authorization: Bearer <token>` (handled by the axios instance).
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+## Availability and safety constraints
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+These are enforced server-side (and assisted by client hints):
 
-### Code Splitting
+- Feed usage
+  - Cannot consume more than the available stock for the selected feed. Updates/deletes adjust stock by delta so totals remain consistent.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+- Deliveries
+  - Over‑delivery is prevented. Creating/updating a delivery checks remaining quantity on the order and rejects if exceeded.
+  - If an order is linked to a product, product inventory is reduced/increased based on deliveries (delta on updates, restored on delete).
 
-### Analyzing the Bundle Size
+- Orders
+  - Reserving quantity against a specific product checks available packaged quantity minus other pending/confirmed reservations.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+- Mortalities
+  - Updating an event ensures you don’t reduce live birds below zero (previous count is considered to compute availability).
 
-### Making a Progressive Web App
+All critical checks are validated on the backend; the UI displays error messages returned by the API.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+## Remaining high‑volume lists and pagination
 
-### Advanced Configuration
+Converted to server-side pagination/filters:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+- Orders, Sales, Deliveries, Mortalities, Feed Usage
 
-### Deployment
+If you notice any other list growing large (e.g., products or slaughtered events), apply the same pattern:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+1. Backend: add `findPaged` and `count` helpers in the model; update controller `getAll` to accept `page`, `limit`, and any filters; return `{ data, meta }`.
+2. Frontend: fetch with query params, store `meta`, and add page size + Prev/Next controls. Avoid client-side re-filtering on top of paginated results.
 
-### `npm run build` fails to minify
+## Running the app
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+In the `frontend` directory:
+
+```bash
+npm install
+npm start
+```
+
+The app runs at <http://localhost:3000>. Ensure the backend is running and the `.env` or axios base URL is configured to reach it.
+
+## Troubleshooting
+
+- If lists don’t paginate, verify the backend endpoint returns `{ data, meta }` and that the query params are forwarded.
+- For auth issues, confirm your token is present and valid. Log out/in to refresh.
+- Inventory/availability errors are intentional guards—adjust quantities or statuses accordingly.

@@ -10,5 +10,7 @@ router.post('/register', userController.createUser);
 // Protected routes
 router.get('/', authenticateToken, userController.getAllUsers);
 router.get('/me', authenticateToken, userController.getCurrentUser);
+router.put('/:id', authenticateToken, userController.updateUser);
+router.delete('/:id', authenticateToken, userController.deleteUser);
 
 module.exports = router;

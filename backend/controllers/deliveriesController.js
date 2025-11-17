@@ -35,8 +35,19 @@ async function recalcAndUpdateOrderStatus(order_id) {
 
 exports.getAll = async (req, res, next) => {
   try {
-    const rows = await DeliveryModel.findAll();
-    res.json(rows);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+    const orderId = req.query.order_id || '';
+    const recipient = req.query.recipient || '';
+    const dateFrom = req.query.date_from || '';
+    const dateTo = req.query.date_to || '';
+
+    const [rows, total] = await Promise.all([
+      DeliveryModel.findPaged({ offset, limit, orderId, recipient, dateFrom, dateTo }),
+      DeliveryModel.count({ orderId, recipient, dateFrom, dateTo })
+    ]);
+    res.json({ data: rows, meta: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (err) {
     next(err);
   }

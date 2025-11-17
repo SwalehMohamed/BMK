@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import api from '../services/api';
-import { Alert, Spinner, Card } from 'react-bootstrap';
+import { Alert, Spinner, Card, Form, Button, Modal, Table } from 'react-bootstrap';
+// Export utilities centralized
+import { buildCsv, downloadCsv, exportPdfTable, fetchAllForExport } from '../utils/export';
+import { useAuth } from '../context/AuthContext';
 import {
   ResponsiveContainer,
   BarChart,
@@ -16,12 +19,16 @@ import {
 } from 'recharts';
 
 const ChickManager = () => {
+  const { currentUser } = useAuth();
   const [chicks, setChicks] = useState([]);
+  const [meta, setMeta] = useState({ page: 1, limit: 10, total: 0, pages: 0 });
+  const [filters, setFilters] = useState({ search: '', breed: '', supplier: '', dateFrom: '', dateTo: '' });
   const [batchName, setBatchName] = useState('');
   const [breed, setBreed] = useState('');
   const [arrivalDate, setArrivalDate] = useState('');
   const [supplier, setSupplier] = useState('');
   const [initialCount, setInitialCount] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(true);
@@ -36,7 +43,7 @@ const ChickManager = () => {
   const [totalChicks, setTotalChicks] = useState(null);
 
   useEffect(() => {
-    fetchChicks();
+    fetchChicks(1, meta.limit);
     // Also fetch total deaths for a simple stat header
     api.get('/dashboard')
       .then(res => {
@@ -44,28 +51,55 @@ const ChickManager = () => {
         setTotalChicks(res?.data?.total_chicks ?? null);
       })
       .catch(() => { setTotalDeaths(null); setTotalChicks(null); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const fetchChicks = async () => {
+  useEffect(() => {
+    // refetch when filters change
+    fetchChicks(1, meta.limit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.search, filters.breed, filters.supplier, filters.dateFrom, filters.dateTo]);
+
+  const fetchChicks = async (page = meta.page, limit = meta.limit) => {
     setLoading(true);
-  try {
-      const response = await api.get('/chicks');
-      // Handle paginated response - extract the data array
-      setChicks(response.data.data || []);
+    try {
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(limit));
+      if (filters.search) params.set('search', filters.search);
+      if (filters.breed) params.set('breed', filters.breed);
+      if (filters.supplier) params.set('supplier', filters.supplier);
+      if (filters.dateFrom) params.set('date_from', filters.dateFrom);
+      if (filters.dateTo) params.set('date_to', filters.dateTo);
+      const response = await api.get(`/chicks?${params.toString()}`);
+      if (response.data?.data) {
+        setChicks(response.data.data);
+        if (response.data.meta) setMeta(response.data.meta);
+      } else {
+        setChicks(response.data || []);
+        setMeta(m => ({ ...m, total: (response.data || []).length, pages: 1 }));
+      }
       setError('');
     } catch (error) {
-      setError('Error fetching chicks');
+      setError(error?.response?.data?.message || 'Error fetching chicks');
       console.error('Error fetching chicks:', error);
-      // Set empty array as fallback
       setChicks([]);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const fetchBatchFeedHistory = async (batchId) => {
     try {
       const res = await api.get(`/chicks/${batchId}/feed-usage`);
-      setFeedHistory((prev) => ({ ...prev, [batchId]: res.data.data || [] }));
+      const rows = res.data?.data || [];
+      // Sort client-side as added safeguard (backend already sorts)
+      rows.sort((a,b)=>{
+        const da = a.date_used ? new Date(a.date_used) : (a.used_at ? new Date(a.used_at) : 0);
+        const db = b.date_used ? new Date(b.date_used) : (b.used_at ? new Date(b.used_at) : 0);
+        return db - da; // desc
+      });
+      setFeedHistory((prev) => ({ ...prev, [batchId]: rows }));
     } catch (err) {
       console.error('Error fetching feed history:', err);
       setFeedHistory((prev) => ({ ...prev, [batchId]: [] }));
@@ -84,9 +118,9 @@ const ChickManager = () => {
 
   const fetchBatchSlaughters = async (batchId) => {
     try {
-      // Fetch all slaughters and filter client-side by batch_id
-      const res = await api.get('/slaughtered');
-      const list = (res.data || []).filter(s => Number(s.batch_id) === Number(batchId));
+      // Fetch slaughters for a batch using server-side filter
+      const res = await api.get(`/slaughtered?batch_id=${encodeURIComponent(batchId)}&page=1&limit=1000`);
+      const list = res.data?.data || res.data || [];
       setSlaughtersByBatch(prev => ({ ...prev, [batchId]: list }));
     } catch (err) {
       console.error('Error fetching slaughters:', err);
@@ -143,16 +177,116 @@ const ChickManager = () => {
         initial_count: initialCount,
       };
       await api.post('/chicks', newChick);
-      fetchChicks(); // Refresh the list
+      fetchChicks(1, meta.limit); // Refresh the list starting page
       setSuccess('Chick added successfully');
       setTimeout(() => setSuccess(''), 3000);
       clearForm();
+      setShowAdd(false);
       setError('');
     } catch (error) {
       setError('Error adding chick');
       console.error('Error adding chick:', error);
     }
   };
+
+  // Editing state
+  const [showEdit, setShowEdit] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+
+  const openEdit = (batch) => {
+    setEditId(batch.id);
+    setEditForm({
+      batch_name: batch.batch_name || '',
+      breed: batch.breed || '',
+      arrival_date: batch.arrival_date ? batch.arrival_date.substring(0,10) : '',
+      supplier: batch.supplier || '',
+      initial_count: batch.initial_count || ''
+    });
+    setShowEdit(true);
+  };
+
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = { ...editForm, initial_count: Number(editForm.initial_count) };
+      await api.put(`/chicks/${editId}`, payload);
+      setSuccess('Batch updated');
+      setTimeout(() => setSuccess(''), 2500);
+      setShowEdit(false); setEditId(null);
+      await fetchChicks(meta.page, meta.limit);
+    } catch (err) {
+      console.error('Error updating batch', err);
+      setError(err?.response?.data?.message || 'Error updating batch');
+    }
+  };
+
+  const deleteBatch = async (id) => {
+    if (!window.confirm('Delete this chick batch? This is irreversible.')) return;
+    try {
+      await api.delete(`/chicks/${id}`);
+      setSuccess('Batch deleted');
+      setTimeout(() => setSuccess(''), 2500);
+      if (expandedBatchId === id) setExpandedBatchId(null);
+      const targetPage = (chicks.length === 1 && meta.page > 1) ? meta.page - 1 : meta.page;
+      await fetchChicks(targetPage, meta.limit);
+    } catch (err) {
+      console.error('Error deleting batch', err);
+      setError(err?.response?.data?.message || 'Error deleting batch');
+    }
+  };
+
+  // Export helpers
+  const exportChicksCSV = async () => {
+    try {
+      const rows = await fetchAllForExport('/chicks', {
+        search: filters.search,
+        breed: filters.breed,
+        supplier: filters.supplier,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo
+      });
+      const header = ['Arrival Date','Batch','Breed','Supplier','Initial','Deaths','Slaughtered','Current'];
+      const body = rows.map(r => [
+        r.arrival_date ? new Date(r.arrival_date).toISOString().slice(0,10) : '',
+        r.batch_name,
+        r.breed,
+        r.supplier,
+        r.initial_count,
+        r.total_deaths ?? 0,
+        r.total_slaughtered ?? 0,
+        (r.current_count ?? (r.initial_count - (r.total_deaths||0) - (r.total_slaughtered||0)))
+      ]);
+      const csv = buildCsv(header, body);
+      downloadCsv(csv, 'chicks-export');
+    } catch (err) { setError('Error exporting CSV'); }
+  };
+
+  const exportChicksPDF = async () => {
+    try {
+      const rows = await fetchAllForExport('/chicks', {
+        search: filters.search,
+        breed: filters.breed,
+        supplier: filters.supplier,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo
+      });
+      const head = [['Arrival','Batch','Breed','Supplier','Initial','Deaths','Slaught.','Current']];
+      const body = rows.map(r => [
+        r.arrival_date ? new Date(r.arrival_date).toLocaleDateString() : '-',
+        r.batch_name,
+        r.breed,
+        r.supplier,
+        r.initial_count,
+        r.total_deaths ?? 0,
+        r.total_slaughtered ?? 0,
+        (r.current_count ?? (r.initial_count - (r.total_deaths||0) - (r.total_slaughtered||0)))
+      ]);
+      exportPdfTable({ title: 'Chick Batches', head, body, fileName: 'chicks-export' });
+    } catch (err) { setError('Error exporting PDF'); }
+  };
+
+  // escapeCsv now provided by shared utils (used indirectly in buildCsv)
 
   const clearForm = () => {
     setBatchName('');
@@ -195,7 +329,8 @@ const ChickManager = () => {
     <div className="container mt-5">
       <div className="d-flex justify-content-between align-items-center mb-3">
         <h2>Chick Manager</h2>
-        <div className="d-flex gap-2">
+        <div className="d-flex gap-2 align-items-center">
+          <Button size="sm" onClick={()=>setShowAdd(true)}>Add Chick</Button>
           {totalChicks != null && (
             <div className="badge bg-primary" title="Total chicks (all time)">Total Chicks: {totalChicks}</div>
           )}
@@ -254,194 +389,251 @@ const ChickManager = () => {
         </div>
       ) : (
         <>
-      <form onSubmit={handleSubmit} className="mb-4">
-        <div className="form-group">
-          <label>Batch Name</label>
-          <input
-            type="text"
-            className="form-control"
-            value={batchName}
-            onChange={(e) => setBatchName(e.target.value)}
-            required
-          />
+      {/* Filters */}
+      <Form className="mb-3">
+        <div className="row g-2">
+          <div className="col-md-3">
+            <Form.Label className="small mb-1">Search</Form.Label>
+            <Form.Control placeholder="batch, breed, supplier" value={filters.search} onChange={(e)=>setFilters(f=>({...f,search:e.target.value}))} />
+          </div>
+          <div className="col-md-2">
+            <Form.Label className="small mb-1">Breed</Form.Label>
+            <Form.Control value={filters.breed} onChange={(e)=>setFilters(f=>({...f,breed:e.target.value}))} />
+          </div>
+            <div className="col-md-2">
+            <Form.Label className="small mb-1">Supplier</Form.Label>
+            <Form.Control value={filters.supplier} onChange={(e)=>setFilters(f=>({...f,supplier:e.target.value}))} />
+          </div>
+          <div className="col-md-2">
+            <Form.Label className="small mb-1">From</Form.Label>
+            <Form.Control type="date" value={filters.dateFrom} onChange={(e)=>setFilters(f=>({...f,dateFrom:e.target.value}))} />
+          </div>
+          <div className="col-md-2">
+            <Form.Label className="small mb-1">To</Form.Label>
+            <Form.Control type="date" value={filters.dateTo} onChange={(e)=>setFilters(f=>({...f,dateTo:e.target.value}))} />
+          </div>
+          <div className="col-md-1 d-flex align-items-end">
+            <Button size="sm" variant="secondary" className="w-100" onClick={()=>setFilters({search:'',breed:'',supplier:'',dateFrom:'',dateTo:''})}>Reset</Button>
+          </div>
+          <div className="col-md-2 d-flex align-items-end gap-2">
+            <Button size="sm" variant="outline-primary" className="w-100" onClick={exportChicksCSV}>Export CSV</Button>
+            <Button size="sm" variant="outline-primary" className="w-100" onClick={exportChicksPDF}>Export PDF</Button>
+          </div>
         </div>
-        <div className="form-group">
-          <label>Breed</label>
-          <input
-            type="text"
-            className="form-control"
-            value={breed}
-            onChange={(e) => setBreed(e.target.value)}
-            required
-          />
-        </div>
-        <div className="form-group">
-          <label>Arrival Date</label>
-          <input
-            type="date"
-            className="form-control"
-            value={arrivalDate}
-            onChange={(e) => setArrivalDate(e.target.value)}
-            required
-          />
-        </div>
-        <div className="form-group">
-          <label>Supplier</label>
-          <input
-            type="text"
-            className="form-control"
-            value={supplier}
-            onChange={(e) => setSupplier(e.target.value)}
-            required
-          />
-        </div>
-        <div className="form-group">
-          <label>Initial Count</label>
-          <input
-            type="number"
-            className="form-control"
-            value={initialCount}
-            onChange={(e) => setInitialCount(e.target.value)}
-            required
-          />
-        </div>
-        <button type="submit" className="btn btn-primary">Add Chick</button>
-      </form>
+      </Form>
 
-      <h3>Existing Chicks</h3>
-      <ul className="list-group">
-        {Array.isArray(chicks) && chicks.map((chick) => (
-          <li key={chick.id} className="list-group-item">
-            <div className="d-flex justify-content-between align-items-center">
-              <div>
-                <strong>{chick.batch_name}</strong> - {chick.breed} - {new Date(chick.arrival_date).toLocaleDateString()} - {chick.supplier} - Initial: {chick.initial_count} | Deaths: {chick.total_deaths ?? 0} | Current: {chick.current_count ?? (chick.initial_count - (chick.total_deaths||0))}
-              </div>
-              <button className="btn btn-sm btn-outline-primary" onClick={() => toggleExpand(chick.id)}>
-                {expandedBatchId === chick.id ? 'Hide Details' : 'View Details'}
-              </button>
+      {/* Add Chick Modal */}
+      <Modal show={showAdd} onHide={()=>setShowAdd(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Add Chick Batch</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form onSubmit={handleSubmit}>
+            <Form.Group className="mb-2">
+              <Form.Label>Batch Name</Form.Label>
+              <Form.Control value={batchName} onChange={(e)=>setBatchName(e.target.value)} required />
+            </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>Breed</Form.Label>
+              <Form.Control value={breed} onChange={(e)=>setBreed(e.target.value)} required />
+            </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>Arrival Date</Form.Label>
+              <Form.Control type="date" value={arrivalDate} onChange={(e)=>setArrivalDate(e.target.value)} required />
+            </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>Supplier</Form.Label>
+              <Form.Control value={supplier} onChange={(e)=>setSupplier(e.target.value)} required />
+            </Form.Group>
+            <Form.Group className="mb-3">
+              <Form.Label>Initial Count</Form.Label>
+              <Form.Control type="number" min={1} value={initialCount} onChange={(e)=>setInitialCount(e.target.value)} required />
+            </Form.Group>
+            <div className="text-end">
+              <Button variant="secondary" className="me-2" onClick={()=>setShowAdd(false)}>Cancel</Button>
+              <Button type="submit" variant="primary">Save</Button>
             </div>
+          </Form>
+        </Modal.Body>
+      </Modal>
 
-            {expandedBatchId === chick.id && (
-              <div className="mt-3">
+      <h3>Chick Batches</h3>
+      <div className="table-responsive">
+        <Table bordered size="sm" className="align-middle">
+          <thead>
+            <tr>
+              <th>Arrival Date</th>
+              <th>Batch</th>
+              <th>Breed</th>
+              <th>Supplier</th>
+              <th>Initial</th>
+              <th>Deaths</th>
+              <th>Slaughtered</th>
+              <th>Current</th>
+              <th className="text-end">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {chicks.length === 0 ? (
+              <tr><td colSpan={9} className="text-center text-muted">No batches found.</td></tr>
+            ) : chicks.map(chick => (
+              <tr key={chick.id} className={expandedBatchId === chick.id ? 'table-active' : ''}>
+                <td>{chick.arrival_date ? new Date(chick.arrival_date).toLocaleDateString() : '-'}</td>
+                <td>{chick.batch_name}</td>
+                <td>{chick.breed}</td>
+                <td>{chick.supplier}</td>
+                <td>{chick.initial_count}</td>
+                <td>{chick.total_deaths ?? 0}</td>
+                <td>{chick.total_slaughtered ?? 0}</td>
+                <td>{chick.current_count ?? (chick.initial_count - (chick.total_deaths||0) - (chick.total_slaughtered||0))}</td>
+                <td className="text-end">
+                  <div className="btn-group btn-group-sm">
+                    <Button variant="outline-secondary" onClick={()=>toggleExpand(chick.id)}>{expandedBatchId === chick.id ? 'Hide' : 'Details'}</Button>
+                    <Button variant="outline-primary" onClick={()=>openEdit(chick)}>Edit</Button>
+                    {currentUser?.role === 'admin' && <Button variant="outline-danger" onClick={()=>deleteBatch(chick.id)}>Delete</Button>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </div>
+      {/* Pagination Controls */}
+      <div className="d-flex justify-content-between align-items-center mb-3">
+        <div className="small text-muted">Page {meta.page} of {meta.pages} | Total {meta.total} batches</div>
+        <div className="d-flex gap-2 align-items-center">
+          <Form.Select size="sm" value={meta.limit} onChange={(e)=>{ const lim = Number(e.target.value); setMeta(m=>({...m, limit: lim })); fetchChicks(1, lim); }}>
+            {[10,20,50,100].map(sz => <option key={sz} value={sz}>{sz}/page</option>)}
+          </Form.Select>
+          <Button size="sm" variant="outline-secondary" disabled={meta.page<=1} onClick={()=>fetchChicks(meta.page-1, meta.limit)}>Prev</Button>
+          <Button size="sm" variant="outline-secondary" disabled={meta.page>=meta.pages} onClick={()=>fetchChicks(meta.page+1, meta.limit)}>Next</Button>
+        </div>
+      </div>
+
+      {/* Expanded row details */}
+      {expandedBatchId && (
+        <div className="border rounded p-3 mb-4 bg-white">
+          {(() => {
+            const chick = chicks.find(c=>c.id===expandedBatchId);
+            if (!chick) return null;
+            return (
+              <>
+                <h5 className="mb-3">Batch Details – {chick.batch_name}</h5>
                 <div className="row">
                   <div className="col-lg-6">
-                    <h5>Feed History</h5>
+                    <h6>Feed History</h6>
                     <div className="table-responsive">
-                      <table className="table table-sm table-bordered">
-                        <thead>
-                          <tr>
-                            <th>Date Used</th>
-                            <th>Feed Type</th>
-                            <th>Quantity Used (kg)</th>
-                          </tr>
-                        </thead>
+                      <Table size="sm" bordered>
+                        <thead><tr><th>Date Used</th><th>Feed</th><th>Qty (kg)</th></tr></thead>
                         <tbody>
-                          {(feedHistory[chick.id] || []).length === 0 ? (
-                            <tr><td colSpan="3" className="text-center text-muted">No feed usage recorded for this batch.</td></tr>
+                          {(feedHistory[chick.id]||[]).length===0 ? (
+                            <tr><td colSpan={3} className="text-center text-muted">No feed usage for this batch.</td></tr>
                           ) : (
-                            (feedHistory[chick.id] || []).map((fh) => (
+                            (feedHistory[chick.id]||[]).map(fh => (
                               <tr key={fh.id}>
-                                <td>{fh.date_used ? new Date(fh.date_used).toLocaleDateString() : new Date(fh.used_at).toLocaleString()}</td>
-                                <td className="text-capitalize">{fh.type}</td>
-                                <td>{fh.quantity_used ?? fh.amount_used}</td>
+                                <td>{fh.date_used ? new Date(fh.date_used).toLocaleDateString() : (fh.used_at ? new Date(fh.used_at).toLocaleString() : '-')}</td>
+                                <td className="text-capitalize">{fh.type || '-'}</td>
+                                <td>{(fh.quantity_used ?? fh.amount_used ?? '-')}</td>
                               </tr>
                             ))
                           )}
                         </tbody>
-                      </table>
+                      </Table>
                     </div>
                   </div>
                   <div className="col-lg-3">
-                    <h5>Record Mortality</h5>
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label>Date</label>
-                        <input type="date" className="form-control" value={(mortalityForm[chick.id]?.date) || ''}
-                          onChange={(e) => setMortalityForm((prev) => ({ ...prev, [chick.id]: { ...(prev[chick.id]||{}), date: e.target.value } }))}/>
-                      </div>
-                      <div className="form-group">
-                        <label>Number Dead</label>
-                        <input type="number" min="1" className="form-control" value={(mortalityForm[chick.id]?.number_dead) || ''}
-                          onChange={(e) => setMortalityForm((prev) => ({ ...prev, [chick.id]: { ...(prev[chick.id]||{}), number_dead: e.target.value } }))}/>
-                      </div>
-                      <div className="form-group">
-                        <label>Reason (optional)</label>
-                        <input type="text" className="form-control" value={(mortalityForm[chick.id]?.reason) || ''}
-                          onChange={(e) => setMortalityForm((prev) => ({ ...prev, [chick.id]: { ...(prev[chick.id]||{}), reason: e.target.value } }))}/>
-                      </div>
-                      <button className="btn btn-danger mt-2" onClick={() => submitMortality(chick.id)} disabled={!mortalityForm[chick.id]?.date || !mortalityForm[chick.id]?.number_dead}>
-                        Save Mortality
-                      </button>
-                    </div>
+                    <h6>Record Mortality</h6>
+                    <Form className="small" onSubmit={(e)=>{e.preventDefault(); submitMortality(chick.id);}}>
+                      <Form.Group className="mb-1">
+                        <Form.Label>Date</Form.Label>
+                        <Form.Control type="date" value={(mortalityForm[chick.id]?.date)||''} onChange={(e)=>setMortalityForm(p=>({...p,[chick.id]:{...(p[chick.id]||{}),date:e.target.value}}))} />
+                      </Form.Group>
+                      <Form.Group className="mb-1">
+                        <Form.Label>Number Dead</Form.Label>
+                        <Form.Control type="number" min={1} value={(mortalityForm[chick.id]?.number_dead)||''} onChange={(e)=>setMortalityForm(p=>({...p,[chick.id]:{...(p[chick.id]||{}),number_dead:e.target.value}}))} />
+                      </Form.Group>
+                      <Form.Group className="mb-2">
+                        <Form.Label>Reason</Form.Label>
+                        <Form.Control value={(mortalityForm[chick.id]?.reason)||''} onChange={(e)=>setMortalityForm(p=>({...p,[chick.id]:{...(p[chick.id]||{}),reason:e.target.value}}))} />
+                      </Form.Group>
+                      <Button size="sm" type="submit" variant="danger" disabled={!mortalityForm[chick.id]?.date || !mortalityForm[chick.id]?.number_dead}>Save</Button>
+                    </Form>
                   </div>
                   <div className="col-lg-3">
-                    <h5>Add to Slaughter</h5>
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label>Date</label>
-                        <input type="date" className="form-control" value={(slaughterForm[chick.id]?.date) || ''}
-                          onChange={(e) => setSlaughterForm((prev) => ({ ...prev, [chick.id]: { ...(prev[chick.id]||{}), date: e.target.value } }))}/>
-                      </div>
-                      <div className="form-group">
-                        <label>Quantity (max {chick.current_count ?? (chick.initial_count - (chick.total_deaths||0) - (chick.total_slaughtered||0))})</label>
-                        <input type="number" min="1" className="form-control" value={(slaughterForm[chick.id]?.quantity) || ''}
-                          onChange={(e) => setSlaughterForm((prev) => ({ ...prev, [chick.id]: { ...(prev[chick.id]||{}), quantity: e.target.value } }))}/>
-                      </div>
-                      <div className="form-group">
-                        <label>Avg Weight (kg, optional)</label>
-                        <input type="number" min="0" step="0.01" className="form-control" value={(slaughterForm[chick.id]?.avg_weight) || ''}
-                          onChange={(e) => setSlaughterForm((prev) => ({ ...prev, [chick.id]: { ...(prev[chick.id]||{}), avg_weight: e.target.value } }))}/>
-                      </div>
-                      <div className="form-group">
-                        <label>Notes (optional)</label>
-                        <input type="text" className="form-control" value={(slaughterForm[chick.id]?.notes) || ''}
-                          onChange={(e) => setSlaughterForm((prev) => ({ ...prev, [chick.id]: { ...(prev[chick.id]||{}), notes: e.target.value } }))}/>
-                      </div>
-                      <button className="btn btn-success mt-2"
-                        onClick={() => submitSlaughter(chick.id, chick.current_count ?? (chick.initial_count - (chick.total_deaths||0) - (chick.total_slaughtered||0)))}
-                        disabled={!slaughterForm[chick.id]?.date || !slaughterForm[chick.id]?.quantity}>
-                        Save Slaughter
-                      </button>
-                    </div>
+                    <h6>Add Slaughter</h6>
+                    <Form className="small" onSubmit={(e)=>{e.preventDefault(); submitSlaughter(chick.id, chick.current_count ?? (chick.initial_count - (chick.total_deaths||0) - (chick.total_slaughtered||0)));}}>
+                      <Form.Group className="mb-1">
+                        <Form.Label>Date</Form.Label>
+                        <Form.Control type="date" value={(slaughterForm[chick.id]?.date)||''} onChange={(e)=>setSlaughterForm(p=>({...p,[chick.id]:{...(p[chick.id]||{}),date:e.target.value}}))} />
+                      </Form.Group>
+                      <Form.Group className="mb-1">
+                        <Form.Label>Quantity (max {chick.current_count ?? (chick.initial_count - (chick.total_deaths||0) - (chick.total_slaughtered||0))})</Form.Label>
+                        <Form.Control type="number" min={1} value={(slaughterForm[chick.id]?.quantity)||''} onChange={(e)=>setSlaughterForm(p=>({...p,[chick.id]:{...(p[chick.id]||{}),quantity:e.target.value}}))} />
+                      </Form.Group>
+                      <Form.Group className="mb-1">
+                        <Form.Label>Avg Weight (kg)</Form.Label>
+                        <Form.Control type="number" min={0} step={0.01} value={(slaughterForm[chick.id]?.avg_weight)||''} onChange={(e)=>setSlaughterForm(p=>({...p,[chick.id]:{...(p[chick.id]||{}),avg_weight:e.target.value}}))} />
+                      </Form.Group>
+                      <Form.Group className="mb-2">
+                        <Form.Label>Notes</Form.Label>
+                        <Form.Control value={(slaughterForm[chick.id]?.notes)||''} onChange={(e)=>setSlaughterForm(p=>({...p,[chick.id]:{...(p[chick.id]||{}),notes:e.target.value}}))} />
+                      </Form.Group>
+                      <Button size="sm" type="submit" variant="success" disabled={!slaughterForm[chick.id]?.date || !slaughterForm[chick.id]?.quantity}>Save</Button>
+                    </Form>
                   </div>
                 </div>
                 <div className="row mt-3">
                   <div className="col-lg-6">
                     <h6>Recent Mortalities</h6>
-                    <ul className="list-group">
-                      {(mortalities[chick.id] || []).length === 0 ? (
-                        <li className="list-group-item text-muted">No mortalities recorded.</li>
-                      ) : (
-                        (mortalities[chick.id] || []).map((m) => (
-                          <li key={m.id} className="list-group-item d-flex justify-content-between">
-                            <span>
-                              {new Date(m.date).toLocaleDateString()} - {m.number_dead} dead {m.reason ? `(${m.reason})` : ''}
-                            </span>
-                          </li>
-                        ))
-                      )}
+                    <ul className="list-group small">
+                      {(mortalities[chick.id]||[]).length===0 ? <li className="list-group-item text-muted">No mortalities recorded.</li> : (mortalities[chick.id]||[]).map(m => (
+                        <li key={m.id} className="list-group-item d-flex justify-content-between"><span>{new Date(m.date).toLocaleDateString()} - {m.number_dead} dead {m.reason?`(${m.reason})`:''}</span></li>
+                      ))}
                     </ul>
                   </div>
                   <div className="col-lg-6">
                     <h6>Recent Slaughters</h6>
-                    <ul className="list-group">
-                      {(slaughtersByBatch[chick.id] || []).length === 0 ? (
-                        <li className="list-group-item text-muted">No slaughters recorded.</li>
-                      ) : (
-                        (slaughtersByBatch[chick.id] || []).slice(0,5).map(s => (
-                          <li key={s.id} className="list-group-item d-flex justify-content-between">
-                            <span>{s.date ? new Date(s.date).toLocaleDateString() : '-'} — Qty: {s.quantity} {s.avg_weight ? `(avg wt ${s.avg_weight} kg)` : ''}</span>
-                          </li>
-                        ))
-                      )}
+                    <ul className="list-group small">
+                      {(slaughtersByBatch[chick.id]||[]).length===0 ? <li className="list-group-item text-muted">No slaughters recorded.</li> : (slaughtersByBatch[chick.id]||[]).slice(0,5).map(s => (
+                        <li key={s.id} className="list-group-item d-flex justify-content-between"><span>{s.date ? new Date(s.date).toLocaleDateString() : '-'} — Qty: {s.quantity} {s.avg_weight ? `(avg wt ${s.avg_weight} kg)` : ''}</span></li>
+                      ))}
                     </ul>
                   </div>
                 </div>
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
+              </>
+            );
+          })()}
+        </div>
+      )}
+      {/* Edit Modal */}
+      <Modal show={showEdit} onHide={()=>setShowEdit(false)}>
+        <Modal.Header closeButton><Modal.Title>Edit Chick Batch</Modal.Title></Modal.Header>
+        <Modal.Body>
+          <Form onSubmit={saveEdit}>
+            <Form.Group className="mb-2">
+              <Form.Label>Batch Name</Form.Label>
+              <Form.Control value={editForm.batch_name||''} onChange={(e)=>setEditForm(f=>({...f,batch_name:e.target.value}))} required />
+            </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>Breed</Form.Label>
+              <Form.Control value={editForm.breed||''} onChange={(e)=>setEditForm(f=>({...f,breed:e.target.value}))} required />
+            </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>Arrival Date</Form.Label>
+              <Form.Control type="date" value={editForm.arrival_date||''} onChange={(e)=>setEditForm(f=>({...f,arrival_date:e.target.value}))} required />
+            </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>Supplier</Form.Label>
+              <Form.Control value={editForm.supplier||''} onChange={(e)=>setEditForm(f=>({...f,supplier:e.target.value}))} required />
+            </Form.Group>
+            <Form.Group className="mb-3">
+              <Form.Label>Initial Count</Form.Label>
+              <Form.Control type="number" min={1} value={editForm.initial_count||''} onChange={(e)=>setEditForm(f=>({...f,initial_count:e.target.value}))} required />
+            </Form.Group>
+            <Button type="submit">Save</Button>
+          </Form>
+        </Modal.Body>
+      </Modal>
       </>
       )}
     </div>

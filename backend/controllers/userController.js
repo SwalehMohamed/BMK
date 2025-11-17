@@ -183,5 +183,78 @@ module.exports = {
   login,
   getAllUsers,
   getCurrentUser,
-  createUser
+  createUser,
+  // Update user (admin only). Supports changing name/username, email, role, and optional password
+  async updateUser(req, res) {
+    try {
+      if (req.userRole !== 'admin') {
+        return res.status(403).json({ message: 'Only admin can update users' });
+      }
+      const { id } = req.params;
+      const { name, username, email, role, password } = req.body || {};
+
+      const cols = await detectUserColumns();
+      const nameCol = cols.hasUsername ? 'username' : (cols.hasName ? 'name' : null);
+      const pwdCol = cols.hasPasswordHash ? 'password_hash' : (cols.hasPassword ? 'password' : null);
+      if (!nameCol || !pwdCol) {
+        return res.status(500).json({ message: 'Server user schema misconfiguration: name/password columns absent.' });
+      }
+
+      // Ensure the user exists
+      const [existing] = await db.query('SELECT id, email FROM users WHERE id = ?', [id]);
+      if (existing.length === 0) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      // Unique email constraint if changing email
+      if (email && email !== existing[0].email) {
+        const [dupes] = await db.query('SELECT id FROM users WHERE email = ? AND id <> ?', [email, id]);
+        if (dupes.length > 0) {
+          return res.status(400).json({ message: 'Another user with this email already exists' });
+        }
+      }
+
+      const updates = {};
+      if (name != null || username != null) {
+        updates[nameCol] = (username || name || '').trim();
+      }
+      if (email != null) updates.email = email;
+      if (role != null) updates.role = role;
+      if (password != null && String(password).trim() !== '') {
+        const hashed = await bcrypt.hash(password, 10);
+        updates[pwdCol] = hashed;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ message: 'No valid fields provided to update' });
+      }
+
+      await db.query('UPDATE users SET ? WHERE id = ?', [updates, id]);
+      res.json({ message: 'User updated successfully' });
+    } catch (error) {
+      console.error('Update user error:', error);
+      res.status(500).json({ message: 'Server error' });
+    }
+  },
+  // Delete user (admin only); prevent self-deletion to avoid accidental lockout
+  async deleteUser(req, res) {
+    try {
+      if (req.userRole !== 'admin') {
+        return res.status(403).json({ message: 'Only admin can delete users' });
+      }
+      const { id } = req.params;
+      if (Number(id) === Number(req.userId)) {
+        return res.status(400).json({ message: 'You cannot delete your own account' });
+      }
+      const [existing] = await db.query('SELECT id FROM users WHERE id = ?', [id]);
+      if (existing.length === 0) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+      await db.query('DELETE FROM users WHERE id = ?', [id]);
+      res.json({ message: 'User deleted successfully' });
+    } catch (error) {
+      console.error('Delete user error:', error);
+      res.status(500).json({ message: 'Server error' });
+    }
+  }
 };

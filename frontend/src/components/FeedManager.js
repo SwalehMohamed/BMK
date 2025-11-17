@@ -5,6 +5,8 @@ import api from '../services/api';
 function FeedManager() {
   const [feeds, setFeeds] = useState([]);
   const [showModal, setShowModal] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingFeedId, setEditingFeedId] = useState(null);
   const [feedData, setFeedData] = useState({
     type: '',
     quantity_kg: '',
@@ -26,7 +28,12 @@ function FeedManager() {
   const [batches, setBatches] = useState([]);
   const [selectedFeedId, setSelectedFeedId] = useState(null);
   const [usageEvents, setUsageEvents] = useState([]);
+  const [usageMeta, setUsageMeta] = useState({ page: 1, limit: 10, total: 0, pages: 0 });
+  const [usageSearch, setUsageSearch] = useState('');
+  const [usageStartDate, setUsageStartDate] = useState('');
+  const [usageEndDate, setUsageEndDate] = useState('');
   const totalFeedQty = feeds.reduce((a, f) => a + Number(f.quantity_kg || 0), 0);
+  const totalFeedUsed = feeds.reduce((a, f) => a + Number(f.used_total || 0), 0);
 
   useEffect(() => {
     fetchFeeds();
@@ -35,11 +42,31 @@ function FeedManager() {
 
   useEffect(() => {
     if (selectedFeedId) {
-      api.get(`/feed/usage?feed_id=${selectedFeedId}`)
-        .then(res => setUsageEvents(Array.isArray(res.data.usage) ? res.data.usage : []))
-        .catch(() => setUsageEvents([]));
+      fetchUsageEvents(1); // reset to page 1 when changing feed
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFeedId]);
+
+  const fetchUsageEvents = async (page = usageMeta.page) => {
+    if (!selectedFeedId) return;
+    try {
+      const params = new URLSearchParams({
+        feed_id: selectedFeedId,
+        page: String(page),
+        limit: String(usageMeta.limit),
+      });
+      if (usageSearch.trim()) params.append('q', usageSearch.trim());
+      if (usageStartDate && usageEndDate) {
+        params.append('start_date', usageStartDate);
+        params.append('end_date', usageEndDate);
+      }
+      const res = await api.get(`/feed/usage?${params.toString()}`);
+      setUsageEvents(Array.isArray(res.data.usage) ? res.data.usage : []);
+      if (res.data.meta) setUsageMeta(res.data.meta);
+    } catch (err) {
+      setUsageEvents([]);
+    }
+  };
 
   const fetchFeeds = async () => {
     setLoading(true);
@@ -77,21 +104,104 @@ function FeedManager() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await api.post('/feed', feedData);
+      if (isEditing && editingFeedId) {
+        await api.put(`/feed/${editingFeedId}`, feedData);
+      } else {
+        await api.post('/feed', feedData);
+      }
       fetchFeeds();
       setShowModal(false);
-      setSuccess('Feed added successfully');
+      setSuccess(isEditing ? 'Feed updated successfully' : 'Feed added successfully');
       setTimeout(() => setSuccess(''), 3000);
       setError('');
+      setIsEditing(false);
+      setEditingFeedId(null);
+      setFeedData({ type: '', quantity_kg: '', supplier: '', purchase_date: '', expiry_date: '' });
     } catch (error) {
-      setError('Error adding feed');
+      setError(isEditing ? 'Error updating feed' : 'Error adding feed');
       console.error('Error adding feed:', error);
+    }
+  };
+
+  const handleDeleteFeed = async (feed) => {
+    if (!window.confirm(`Delete feed '${feed.type}' from ${feed.supplier}? This cannot be undone if no usage events are present.`)) return;
+    try {
+      await api.delete(`/feed/${feed.id}`);
+      setSuccess('Feed deleted successfully');
+      setTimeout(() => setSuccess(''), 3000);
+      fetchFeeds();
+    } catch (error) {
+      const serverMsg = error?.response?.data?.message || error?.response?.data?.errors?.[0]?.message;
+      setError(serverMsg || 'Error deleting feed');
+    }
+  };
+
+  const [editingUsageId, setEditingUsageId] = useState(null);
+  const [editingUsageQty, setEditingUsageQty] = useState('');
+
+  const beginEditUsage = (event) => {
+    setEditingUsageId(event.id);
+    setEditingUsageQty(event.amount_used);
+  };
+
+  const cancelEditUsage = () => {
+    setEditingUsageId(null);
+    setEditingUsageQty('');
+  };
+
+  const saveEditUsage = async (event) => {
+    const newQty = Number(editingUsageQty);
+    if (isNaN(newQty) || newQty <= 0) {
+      setError('Enter a valid positive quantity');
+      return;
+    }
+    try {
+      await api.put(`/feed/usage/${event.id}`, { quantity_used: newQty });
+      setSuccess('Usage event updated');
+      setTimeout(() => setSuccess(''), 3000);
+      cancelEditUsage();
+      // Refresh usage events & feeds
+      fetchUsageEvents();
+      fetchFeeds();
+    } catch (error) {
+      const serverMsg = error?.response?.data?.message || error?.response?.data?.errors?.[0]?.message;
+      setError(serverMsg || 'Error updating usage event');
+    }
+  };
+
+  const deleteUsageEvent = async (event) => {
+    if (!window.confirm('Delete this usage event and restore its quantity to feed stock?')) return;
+    try {
+      await api.delete(`/feed/usage/${event.id}`);
+      setSuccess('Usage event deleted');
+      setTimeout(() => setSuccess(''), 3000);
+      fetchUsageEvents();
+      fetchFeeds();
+    } catch (error) {
+      const serverMsg = error?.response?.data?.message || error?.response?.data?.errors?.[0]?.message;
+      setError(serverMsg || 'Error deleting usage event');
     }
   };
 
   const handleRecordUsage = async (e) => {
     e.preventDefault();
     try {
+      // Client-side validation against available quantity
+      const selected = Array.isArray(feeds) ? feeds.find(f => String(f.id) === String(usageData.feed_id)) : null;
+      const available = selected ? Number(selected.quantity_kg) : 0;
+      const requested = Number(usageData.quantity_used);
+      if (!selected) {
+        setError('Please select a valid feed item.');
+        return;
+      }
+      if (isNaN(requested) || requested <= 0) {
+        setError('Please enter a valid quantity used.');
+        return;
+      }
+      if (requested > available) {
+        setError(`Quantity used exceeds available stock (${available} kg).`);
+        return;
+      }
       await api.post('/feed/usage', usageData);
       fetchFeeds();
       setShowUsageModal(false);
@@ -99,7 +209,9 @@ function FeedManager() {
       setTimeout(() => setSuccess(''), 3000);
       setError('');
     } catch (error) {
-      setError('Error recording feed usage');
+      // Try to surface server validation message if available
+      const serverMsg = error?.response?.data?.message || error?.response?.data?.errors?.[0]?.message;
+      setError(serverMsg || 'Error recording feed usage');
       console.error('Error recording usage:', error);
     }
   };
@@ -123,14 +235,17 @@ function FeedManager() {
 
       <div className="d-flex flex-wrap gap-3 mb-3 small text-muted">
         <div className="badge bg-secondary">Feed Items: {Array.isArray(feeds) ? feeds.length : 0}</div>
-        <div className="badge bg-info">Total Qty (kg): {totalFeedQty.toFixed(2)}</div>
+        <div className="badge bg-info">Total Remaining (kg): {totalFeedQty.toFixed(2)}</div>
+        <div className="badge bg-warning text-dark">Total Used (kg): {totalFeedUsed.toFixed(2)}</div>
       </div>
 
       <Table striped bordered hover responsive>
         <thead>
           <tr>
             <th>Type</th>
-            <th>Quantity (kg)</th>
+            <th>Remaining (kg)</th>
+            <th>Used (kg)</th>
+            <th>% Consumed</th>
             <th>Supplier</th>
             <th>Purchase Date</th>
             <th>Expiry Date</th>
@@ -142,10 +257,37 @@ function FeedManager() {
             <tr key={feed.id}>
               <td>{feed.type}</td>
               <td>{feed.quantity_kg}</td>
+              <td>{feed.used_total || 0}</td>
+              <td>{(() => {
+                const used = Number(feed.used_total || 0);
+                const remaining = Number(feed.quantity_kg || 0);
+                const original = used + remaining;
+                if (original <= 0) return '0%';
+                return ((used / original) * 100).toFixed(1) + '%';
+              })()}</td>
               <td>{feed.supplier}</td>
               <td>{new Date(feed.purchase_date).toLocaleDateString()}</td>
               <td>{new Date(feed.expiry_date).toLocaleDateString()}</td>
               <td>
+                <Button
+                  variant="warning"
+                  size="sm"
+                  className="me-2"
+                  onClick={() => {
+                    setIsEditing(true);
+                    setEditingFeedId(feed.id);
+                    setFeedData({
+                      type: feed.type || '',
+                      quantity_kg: feed.quantity_kg || '',
+                      supplier: feed.supplier || '',
+                      purchase_date: feed.purchase_date ? new Date(feed.purchase_date).toISOString().slice(0,10) : '',
+                      expiry_date: feed.expiry_date ? new Date(feed.expiry_date).toISOString().slice(0,10) : ''
+                    });
+                    setShowModal(true);
+                  }}
+                >
+                  Edit
+                </Button>
                 <Button 
                   variant="info" 
                   size="sm" 
@@ -166,6 +308,14 @@ function FeedManager() {
                 >
                   View Usage
                 </Button>
+                {' '}
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => handleDeleteFeed(feed)}
+                >
+                  Delete
+                </Button>
               </td>
             </tr>
           ))}
@@ -173,9 +323,9 @@ function FeedManager() {
       </Table>
 
       {/* Add Feed Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)}>
+      <Modal show={showModal} onHide={() => { setShowModal(false); setIsEditing(false); setEditingFeedId(null); }}>
         <Modal.Header closeButton>
-          <Modal.Title>Add New Feed</Modal.Title>
+          <Modal.Title>{isEditing ? 'Edit Feed' : 'Add New Feed'}</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <Form onSubmit={handleSubmit}>
@@ -237,9 +387,24 @@ function FeedManager() {
               />
             </Form.Group>
 
-            <Button variant="primary" type="submit">
-              Save Feed
-            </Button>
+            <div className="d-flex gap-2">
+              <Button variant="primary" type="submit">
+                {isEditing ? 'Update Feed' : 'Save Feed'}
+              </Button>
+              {isEditing && (
+                <Button
+                  variant="outline-secondary"
+                  type="button"
+                  onClick={() => {
+                    setIsEditing(false);
+                    setEditingFeedId(null);
+                    setFeedData({ type: '', quantity_kg: '', supplier: '', purchase_date: '', expiry_date: '' });
+                  }}
+                >
+                  Cancel
+                </Button>
+              )}
+            </div>
           </Form>
         </Modal.Body>
       </Modal>
@@ -261,7 +426,7 @@ function FeedManager() {
               >
                 {Array.isArray(feeds) && feeds.map(feed => (
                   <option key={feed.id} value={feed.id}>
-                    {feed.type} ({feed.supplier})
+                    {feed.type} ({feed.supplier}) - Available: {feed.quantity_kg} kg
                   </option>
                 ))}
               </Form.Control>
@@ -292,8 +457,19 @@ function FeedManager() {
                 step="0.01"
                 value={usageData.quantity_used}
                 onChange={(e) => setUsageData({...usageData, quantity_used: e.target.value})}
+                max={(() => {
+                  const selected = Array.isArray(feeds) ? feeds.find(f => String(f.id) === String(usageData.feed_id)) : null;
+                  return selected ? Number(selected.quantity_kg) : undefined;
+                })()}
                 required
               />
+              {(() => {
+                const selected = Array.isArray(feeds) ? feeds.find(f => String(f.id) === String(usageData.feed_id)) : null;
+                if (!selected) return null;
+                return (
+                  <small className="text-muted">Available: {selected.quantity_kg} kg</small>
+                );
+              })()}
             </Form.Group>
 
             <Form.Group controlId="dateUsed" className="mb-3">
@@ -319,28 +495,122 @@ function FeedManager() {
           <Modal.Title>Usage Events for Feed #{selectedFeedId}</Modal.Title>
         </Modal.Header>
         <Modal.Body>
+          <Form className="mb-3" onSubmit={(e) => { e.preventDefault(); fetchUsageEvents(1); }}>
+            <div className="row g-2 align-items-end">
+              <div className="col-md-3">
+                <Form.Label>Search User</Form.Label>
+                <Form.Control
+                  type="text"
+                  value={usageSearch}
+                  onChange={(e) => setUsageSearch(e.target.value)}
+                  placeholder="e.g. Ahmed"
+                />
+              </div>
+              <div className="col-md-3">
+                <Form.Label>Start Date</Form.Label>
+                <Form.Control
+                  type="date"
+                  value={usageStartDate}
+                  onChange={(e) => setUsageStartDate(e.target.value)}
+                />
+              </div>
+              <div className="col-md-3">
+                <Form.Label>End Date</Form.Label>
+                <Form.Control
+                  type="date"
+                  value={usageEndDate}
+                  onChange={(e) => setUsageEndDate(e.target.value)}
+                />
+              </div>
+              <div className="col-md-3 d-flex gap-2">
+                <div className="flex-grow-1">
+                  <Form.Label>Page Size</Form.Label>
+                  <Form.Select
+                    value={usageMeta.limit}
+                    onChange={(e) => setUsageMeta(m => ({ ...m, limit: Number(e.target.value), page: 1 }))}
+                  >
+                    {[10,20,50,100].map(sz => <option key={sz} value={sz}>{sz}</option>)}
+                  </Form.Select>
+                </div>
+                <Button className="align-self-end" variant="primary" type="submit">Apply</Button>
+              </div>
+            </div>
+          </Form>
           <Table striped bordered hover responsive>
             <thead>
               <tr>
                 <th>User</th>
-                <th>Amount Used</th>
+                <th>Batch</th>
+                <th>Amount Used (kg)</th>
                 <th>Date/Time</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {Array.isArray(usageEvents) && usageEvents.length === 0 ? (
-                <tr><td colSpan={3}>No usage events found.</td></tr>
+                <tr><td colSpan={5}>No usage events found.</td></tr>
               ) : (
-                Array.isArray(usageEvents) && usageEvents.map(event => (
-                  <tr key={event.id}>
-                    <td>{event.user_name}</td>
-                    <td>{event.amount_used}</td>
-                    <td>{new Date(event.used_at).toLocaleString()}</td>
-                  </tr>
-                ))
+                Array.isArray(usageEvents) && usageEvents.map(event => {
+                  const isEditingUsage = editingUsageId === event.id;
+                  const batchName = (() => {
+                    const b = Array.isArray(batches) ? batches.find(x => String(x.id) === String(event.batch_id)) : null;
+                    return b?.batch_name || (event.batch_id ? `#${event.batch_id}` : '-');
+                  })();
+                  return (
+                    <tr key={event.id}>
+                      <td>{event.user_name}</td>
+                      <td>{batchName}</td>
+                      <td>
+                        {isEditingUsage ? (
+                          <Form.Control
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editingUsageQty}
+                            onChange={(e) => setEditingUsageQty(e.target.value)}
+                            style={{ maxWidth: '120px' }}
+                          />
+                        ) : (
+                          event.amount_used
+                        )}
+                      </td>
+                      <td>{new Date(event.used_at).toLocaleString()}</td>
+                      <td>
+                        {isEditingUsage ? (
+                          <>
+                            <Button variant="success" size="sm" onClick={() => saveEditUsage(event)}>Save</Button>{' '}
+                            <Button variant="outline-secondary" size="sm" onClick={cancelEditUsage}>Cancel</Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button variant="warning" size="sm" onClick={() => beginEditUsage(event)}>Edit</Button>{' '}
+                            <Button variant="danger" size="sm" onClick={() => deleteUsageEvent(event)}>Delete</Button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </Table>
+          <div className="d-flex justify-content-between align-items-center mt-2">
+            <div className="small text-muted">Page {usageMeta.page} of {usageMeta.pages} | Total {usageMeta.total} events</div>
+            <div className="d-flex gap-2">
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                disabled={usageMeta.page <= 1}
+                onClick={() => fetchUsageEvents(usageMeta.page - 1)}
+              >Prev</Button>
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                disabled={usageMeta.page >= usageMeta.pages}
+                onClick={() => fetchUsageEvents(usageMeta.page + 1)}
+              >Next</Button>
+            </div>
+          </div>
         </Modal.Body>
       </Modal>
     </div>

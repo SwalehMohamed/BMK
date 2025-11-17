@@ -17,6 +17,41 @@ class OrderModel {
     return rows;
   }
 
+  static async findPaged({ offset = 0, limit = 10, customer = '', status = '', productType = '', dateFrom = null, dateTo = null }) {
+    const filters = [];
+    const params = [];
+    if (customer && String(customer).trim() !== '') { filters.push('o.customer_name LIKE ?'); params.push(`%${customer}%`); }
+    if (status && String(status).trim() !== '') { filters.push('o.status = ?'); params.push(status); }
+    if (productType && String(productType).trim() !== '') { filters.push('(o.product_type = ? OR p.type = ?)'); params.push(productType, productType); }
+    if (dateFrom) { filters.push('o.order_date >= ?'); params.push(dateFrom); }
+    if (dateTo) { filters.push('o.order_date <= ?'); params.push(dateTo); }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const [rows] = await db.query(`
+      SELECT o.*, p.type AS product_type_resolved,
+             (SELECT COALESCE(SUM(d.quantity_delivered), 0)
+                FROM deliveries d
+               WHERE d.order_id = o.id) AS delivered_sum
+        FROM orders o
+        LEFT JOIN products p ON o.product_id = p.id
+        ${where}
+       ORDER BY o.order_date DESC, o.id DESC
+       LIMIT ? OFFSET ?`, [...params, Number(limit), Number(offset)]);
+    return rows;
+  }
+
+  static async count({ customer = '', status = '', productType = '', dateFrom = null, dateTo = null }) {
+    const filters = [];
+    const params = [];
+    if (customer && String(customer).trim() !== '') { filters.push('customer_name LIKE ?'); params.push(`%${customer}%`); }
+    if (status && String(status).trim() !== '') { filters.push('status = ?'); params.push(status); }
+    if (productType && String(productType).trim() !== '') { filters.push('(product_type = ? )'); params.push(productType); }
+    if (dateFrom) { filters.push('order_date >= ?'); params.push(dateFrom); }
+    if (dateTo) { filters.push('order_date <= ?'); params.push(dateTo); }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const [[row]] = await db.query(`SELECT COUNT(*) AS cnt FROM orders ${where}`, params);
+    return row?.cnt || 0;
+  }
+
   static async create(order) {
     const payload = {
       order_date: order.order_date,

@@ -14,14 +14,14 @@ async function ensureTables() {
       CONSTRAINT fk_mortality_batch FOREIGN KEY (chick_batch_id) REFERENCES chicks(id) ON DELETE CASCADE,
       INDEX idx_mortality_date (date)
     )`,
-    // Feed usage log
+    // Feed usage log (new schema). Legacy instances may lack some columns; we patch below.
     `CREATE TABLE IF NOT EXISTS feed_usage (
       id INT AUTO_INCREMENT PRIMARY KEY,
       feed_id INT NOT NULL,
       user_id INT NULL,
       batch_id INT NULL,
-      quantity_used DECIMAL(10,2) NOT NULL,
-      date_used DATE NOT NULL,
+      quantity_used DECIMAL(10,2) NULL,
+      date_used DATE NULL,
       used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT fk_feed_usage_feed FOREIGN KEY (feed_id) REFERENCES feeds(id) ON DELETE CASCADE,
       CONSTRAINT fk_feed_usage_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
@@ -55,6 +55,29 @@ async function ensureTables() {
     } catch (err) {
       console.error('DB init error for query:', sql.split('\n')[0], err.message);
     }
+  }
+
+  // Patch legacy feed_usage table to ensure required columns exist (batch_id, quantity_used, date_used)
+  try {
+    const [cols] = await db.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'feed_usage'`);
+    const names = cols.map(c => c.column_name);
+    const hasBatchId = names.includes('batch_id');
+    const hasQuantityUsed = names.includes('quantity_used');
+    const hasDateUsed = names.includes('date_used');
+    // Add missing columns with NULL default to avoid failing legacy inserts
+    if (!hasBatchId) {
+      try { await db.query(`ALTER TABLE feed_usage ADD COLUMN batch_id INT NULL AFTER user_id`); } catch(e) {}
+      try { await db.query(`CREATE INDEX idx_feed_usage_batch ON feed_usage(batch_id)`); } catch(e) {}
+      try { await db.query(`ALTER TABLE feed_usage ADD CONSTRAINT fk_feed_usage_batch FOREIGN KEY (batch_id) REFERENCES chicks(id) ON DELETE SET NULL`); } catch(e) {}
+    }
+    if (!hasQuantityUsed) {
+      try { await db.query(`ALTER TABLE feed_usage ADD COLUMN quantity_used DECIMAL(10,2) NULL AFTER batch_id`); } catch(e) {}
+    }
+    if (!hasDateUsed) {
+      try { await db.query(`ALTER TABLE feed_usage ADD COLUMN date_used DATE NULL AFTER quantity_used`); } catch(e) {}
+    }
+  } catch (err) {
+    console.error('DB init error patching feed_usage columns:', err.message);
   }
 
   // Ensure orders table exists

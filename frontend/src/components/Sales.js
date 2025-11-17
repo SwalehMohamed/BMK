@@ -31,6 +31,7 @@ import { useAuth } from '../context/AuthContext';
 const Sales = () => {
   const { currentUser } = useAuth();
   const [rows, setRows] = useState([]);
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, pages: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
@@ -38,10 +39,23 @@ const Sales = () => {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
 
-  const fetchSales = async () => {
+  const fetchSales = async (page = meta.page, limit = meta.limit) => {
     try {
-      const res = await api.get('/sales');
-      setRows(res.data || []);
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(limit));
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (fromDate) params.set('date_from', fromDate);
+      if (toDate) params.set('date_to', toDate);
+      if (query) params.set('customer', query);
+      const res = await api.get(`/sales?${params.toString()}`);
+      if (res.data?.data) {
+        setRows(res.data.data);
+        if (res.data.meta) setMeta(res.data.meta);
+      } else {
+        setRows(res.data || []);
+        setMeta(m => ({ ...m, total: (res.data || []).length, pages: 1 }));
+      }
     } catch (err) {
       console.error('Error fetching sales', err);
       setError(err?.response?.data?.message || 'Error fetching sales');
@@ -50,26 +64,17 @@ const Sales = () => {
 
   useEffect(() => {
     setLoading(true);
-    fetchSales().finally(() => setLoading(false));
-  }, []);
+    fetchSales(1, meta.limit).finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
-  const filtered = useMemo(() => {
-    const q = String(query || '').trim().toLowerCase();
-    return (rows || []).filter(r => {
-      if (statusFilter !== 'all' && r.status !== statusFilter) return false;
-      if (q) {
-        const hay = `${r.customer_name || ''} ${r.product_type || ''} ${r.id || ''}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      if (fromDate) {
-        if (new Date(r.order_date) < new Date(fromDate)) return false;
-      }
-      if (toDate) {
-        if (new Date(r.order_date) > new Date(toDate)) return false;
-      }
-      return true;
-    });
-  }, [rows, query, statusFilter, fromDate, toDate]);
+  useEffect(() => {
+    // refetch on filter changes, reset to page 1
+    fetchSales(1, meta.limit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, fromDate, toDate, query]);
+
+  const filtered = rows; // server-side filtering/pagination applied
 
   const totals = useMemo(() => {
     return filtered.reduce((acc, r) => {
@@ -218,6 +223,16 @@ const Sales = () => {
                 </tr>
               </tfoot>
             </table>
+            <div className="d-flex justify-content-between align-items-center mt-2">
+              <div className="small text-muted">Page {meta.page} of {meta.pages} | Total {meta.total} orders</div>
+              <div className="d-flex gap-2 align-items-center">
+                <Form.Select size="sm" value={meta.limit} onChange={(e)=>{ const lim = Number(e.target.value); setMeta(m=>({...m, limit: lim })); fetchSales(1, lim); }}>
+                  {[10,20,50,100].map(sz => <option key={sz} value={sz}>{sz}/page</option>)}
+                </Form.Select>
+                <Button variant="outline-secondary" size="sm" disabled={meta.page<=1} onClick={()=>fetchSales(meta.page-1, meta.limit)}>Prev</Button>
+                <Button variant="outline-secondary" size="sm" disabled={meta.page>=meta.pages} onClick={()=>fetchSales(meta.page+1, meta.limit)}>Next</Button>
+              </div>
+            </div>
           </div>
         </>
       )}

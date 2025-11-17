@@ -4,8 +4,19 @@ const { AppError } = require('../utils/errors');
 
 exports.getAll = async (req, res, next) => {
   try {
-    const rows = await OrderModel.findAll();
-    res.json(rows);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+    const customer = req.query.customer || '';
+    const status = req.query.status || '';
+    const productType = req.query.product_type || '';
+    const dateFrom = req.query.date_from || '';
+    const dateTo = req.query.date_to || '';
+    const [data, total] = await Promise.all([
+      OrderModel.findPaged({ offset, limit, customer, status, productType, dateFrom, dateTo }),
+      OrderModel.count({ customer, status, productType, dateFrom, dateTo })
+    ]);
+    res.json({ data, meta: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (err) {
     next(err);
   }

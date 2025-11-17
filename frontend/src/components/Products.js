@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api from '../services/api';
-import { Alert, Spinner } from 'react-bootstrap';
+import { Alert, Spinner, Form, Button } from 'react-bootstrap';
+import { buildCsv, downloadCsv, exportPdfTable, fetchAllForExport } from '../utils/export';
 
 const Products = () => {
   const [products, setProducts] = useState([]);
-  const [filters, setFilters] = useState({ type: '', batchId: '' });
+  const [meta, setMeta] = useState({ page: 1, limit: 10, total: 0, pages: 0 });
+  const [filters, setFilters] = useState({ type: '', batchId: '', dateFrom: '', dateTo: '' });
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ type: '', packaged_quantity: '', batch_id: '' });
   const [batches, setBatches] = useState([]);
@@ -14,13 +16,34 @@ const Products = () => {
 
 
 
-  const fetchProducts = async () => {
+  const fetchProducts = async (page = meta.page, limit = meta.limit) => {
     try {
-      const res = await api.get('/products');
-      setProducts(res.data || []);
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(limit));
+      if (filters.type) {
+        // use search for partial match on type
+        params.set('search', filters.type);
+        // also send exact type param for backend exact filter if implemented
+        params.set('type', filters.type);
+      }
+      if (filters.batchId) params.set('batch_id', filters.batchId);
+      if (filters.dateFrom) params.set('date_from', filters.dateFrom);
+      if (filters.dateTo) params.set('date_to', filters.dateTo);
+      const res = await api.get(`/products?${params.toString()}`);
+      if (res.data?.data) {
+        setProducts(res.data.data);
+        if (res.data.meta) setMeta(res.data.meta);
+      } else {
+        // fallback if not paginated
+        const arr = res.data || [];
+        setProducts(arr);
+        setMeta(m => ({ ...m, total: arr.length, pages: 1 }));
+      }
     } catch (err) {
       console.error('Error fetching products', err);
       setError(err?.response?.data?.message || 'Error fetching products');
+      setProducts([]);
     }
   };
 
@@ -44,28 +67,27 @@ const Products = () => {
 
   useEffect(() => {
     setLoading(true);
-  Promise.all([fetchProducts(), fetchBatches()]).finally(() => setLoading(false));
+    Promise.all([fetchProducts(1, meta.limit), fetchBatches()]).finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const filteredProducts = useMemo(() => {
-    return (products || []).filter(p => {
-      const typeOk = filters.type ? String(p.type || '').toLowerCase().includes(filters.type.toLowerCase()) : true;
-      const batchOk = filters.batchId ? String(p.batch_id || '').trim() === String(filters.batchId).trim() : true;
-      return typeOk && batchOk;
-    });
-  }, [products, filters]);
+  useEffect(() => {
+    // refetch on filter change
+    fetchProducts(1, meta.limit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.type, filters.batchId, filters.dateFrom, filters.dateTo]);
 
   const summary = useMemo(() => {
-    const count = (filteredProducts || []).length;
-    const qty = (filteredProducts || []).reduce((a, p) => a + Number(p.packaged_quantity || 0), 0);
-    // Totals per product type
+    // Summary for current page (not entire filtered dataset unless backend adds aggregates)
+    const count = (products || []).length;
+    const qty = (products || []).reduce((a, p) => a + Number(p.packaged_quantity || 0), 0);
     const byType = {};
-    (filteredProducts || []).forEach(p => {
+    (products || []).forEach(p => {
       const type = (p.type || 'Unknown').toLowerCase();
       byType[type] = (byType[type] || 0) + Number(p.packaged_quantity || 0);
     });
     return { count, qty, byType };
-  }, [filteredProducts]);
+  }, [products]);
 
   const startEdit = (p) => {
     setEditingId(p.id);
@@ -91,7 +113,7 @@ const Products = () => {
   await api.put(`/products/${id}`, payload);
       setSuccess('Product updated');
       setTimeout(() => setSuccess(''), 2500);
-  await fetchProducts();
+  await fetchProducts(meta.page, meta.limit);
       cancelEdit();
     } catch (err) {
       console.error('Error updating product', err);
@@ -105,11 +127,57 @@ const Products = () => {
       await api.delete(`/products/${id}`);
       setSuccess('Product deleted');
       setTimeout(() => setSuccess(''), 2500);
-      await fetchProducts();
+      await fetchProducts(meta.page, meta.limit);
     } catch (err) {
       console.error('Error deleting product', err);
       setError(err?.response?.data?.message || 'Error deleting product');
     }
+  };
+
+  // Export helpers
+  const exportProductsCSV = async () => {
+    try {
+      const rows = await fetchAllForExport('/products', {
+        search: filters.type,
+        type: filters.type,
+        batch_id: filters.batchId,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo
+      });
+      const header = ['ID','Type','Packaged Qty','Weight','Batch','Created'];
+      const body = rows.map(p => [
+        p.id,
+        p.type,
+        p.packaged_quantity,
+        p.weight ?? '',
+        p.batch_name || (p.batch_id ? `Batch #${p.batch_id}` : ''),
+        p.created_at ? new Date(p.created_at).toISOString() : ''
+      ]);
+      const csv = buildCsv(header, body);
+      downloadCsv(csv, 'products');
+    } catch (err) { setError('Error exporting products CSV'); }
+  };
+
+  const exportProductsPDF = async () => {
+    try {
+      const rows = await fetchAllForExport('/products', {
+        search: filters.type,
+        type: filters.type,
+        batch_id: filters.batchId,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo
+      });
+      const head = [['ID','Type','Packaged Qty','Weight','Batch','Created']];
+      const body = rows.map(p => [
+        p.id,
+        p.type,
+        p.packaged_quantity,
+        p.weight ?? '-',
+        p.batch_name || (p.batch_id ? `Batch #${p.batch_id}` : 'Unlinked'),
+        p.created_at ? new Date(p.created_at).toLocaleDateString() : '-'
+      ]);
+      exportPdfTable({ title: 'Products', head, body, fileName: 'products' });
+    } catch (err) { setError('Error exporting products PDF'); }
   };
 
 
@@ -131,6 +199,7 @@ const Products = () => {
                 <div className="card-body">
                   <h6 className="card-title text-muted">Total Products</h6>
                   <h3 className="card-text">{summary.count}</h3>
+                  <div className="small text-muted">Filtered total: {meta.total}</div>
                 </div>
               </div>
             </div>
@@ -170,35 +239,38 @@ const Products = () => {
               </div>
             </div>
           </div>
-
-          <div className="d-flex align-items-end justify-content-between mb-2">
-            <h5 className="mb-0">Existing Products</h5>
-            <div className="d-flex gap-2">
-              <div>
-                <label className="form-label mb-0 small">Filter by Type</label>
-                <input
-                  type="text"
-                  className="form-control form-control-sm"
-                  placeholder="type contains…"
-                  value={filters.type}
-                  onChange={(e) => setFilters(prev => ({ ...prev, type: e.target.value }))}
-                />
+          {/* Filters */}
+          <Form className="mb-3">
+            <div className="row g-2">
+              <div className="col-md-3">
+                <Form.Label className="small mb-1">Search / Type</Form.Label>
+                <Form.Control value={filters.type} placeholder="type contains…" onChange={(e)=>setFilters(f=>({...f,type:e.target.value}))} />
               </div>
-              <div>
-                <label className="form-label mb-0 small">Filter by Batch</label>
-                <select
-                  className="form-select form-select-sm"
-                  value={filters.batchId}
-                  onChange={(e) => setFilters(prev => ({ ...prev, batchId: e.target.value }))}
-                >
+              <div className="col-md-2">
+                <Form.Label className="small mb-1">Batch</Form.Label>
+                <Form.Select value={filters.batchId} onChange={(e)=>setFilters(f=>({...f,batchId:e.target.value}))}>
                   <option value="">All</option>
-                  {(batches || []).map(b => (
-                    <option key={b.id} value={b.id}>{b.batch_name}</option>
-                  ))}
-                </select>
+                  {(batches||[]).map(b => <option key={b.id} value={b.id}>{b.batch_name}</option>)}
+                </Form.Select>
+              </div>
+              <div className="col-md-2">
+                <Form.Label className="small mb-1">From</Form.Label>
+                <Form.Control type="date" value={filters.dateFrom} onChange={(e)=>setFilters(f=>({...f,dateFrom:e.target.value}))} />
+              </div>
+              <div className="col-md-2">
+                <Form.Label className="small mb-1">To</Form.Label>
+                <Form.Control type="date" value={filters.dateTo} onChange={(e)=>setFilters(f=>({...f,dateTo:e.target.value}))} />
+              </div>
+              <div className="col-md-1 d-flex align-items-end">
+                <Button size="sm" variant="secondary" className="w-100" onClick={()=>setFilters({ type:'', batchId:'', dateFrom:'', dateTo:'' })}>Reset</Button>
+              </div>
+              <div className="col-md-2 d-flex align-items-end gap-2">
+                <Button size="sm" variant="outline-primary" className="w-100" onClick={exportProductsCSV}>CSV</Button>
+                <Button size="sm" variant="outline-primary" className="w-100" onClick={exportProductsPDF}>PDF</Button>
               </div>
             </div>
-          </div>
+          </Form>
+          <h5 className="mb-2">Existing Products</h5>
           <div className="table-responsive">
             <table className="table table-bordered table-sm">
               <thead>
@@ -213,10 +285,10 @@ const Products = () => {
                 </tr>
               </thead>
               <tbody>
-                {(filteredProducts || []).length === 0 ? (
+                {(products || []).length === 0 ? (
                   <tr><td colSpan="7" className="text-center text-muted">No products yet.</td></tr>
                 ) : (
-                  (filteredProducts || []).map(p => (
+                  (products || []).map(p => (
                     <tr key={p.id}>
                       <td>{p.id}</td>
                       <td>
@@ -297,6 +369,17 @@ const Products = () => {
                 )}
               </tbody>
             </table>
+          </div>
+          {/* Pagination */}
+          <div className="d-flex justify-content-between align-items-center mt-3">
+            <div className="small text-muted">Page {meta.page} of {meta.pages} | Total {meta.total}</div>
+            <div className="d-flex gap-2 align-items-center">
+              <Form.Select size="sm" value={meta.limit} onChange={(e)=>{ const lim = Number(e.target.value); setMeta(m=>({...m,limit:lim})); fetchProducts(1, lim); }}>
+                {[10,20,50,100].map(sz => <option key={sz} value={sz}>{sz}/page</option>)}
+              </Form.Select>
+              <Button size="sm" variant="outline-secondary" disabled={meta.page<=1} onClick={()=>fetchProducts(meta.page-1, meta.limit)}>Prev</Button>
+              <Button size="sm" variant="outline-secondary" disabled={meta.page>=meta.pages} onClick={()=>fetchProducts(meta.page+1, meta.limit)}>Next</Button>
+            </div>
           </div>
         </>
       )}
