@@ -10,11 +10,12 @@ exports.getAll = async (req, res, next) => {
     const customer = req.query.customer || '';
     const status = req.query.status || '';
     const productType = req.query.product_type || '';
+    const productId = req.query.product_id || '';
     const dateFrom = req.query.date_from || '';
     const dateTo = req.query.date_to || '';
     const [data, total] = await Promise.all([
-      OrderModel.findPaged({ offset, limit, customer, status, productType, dateFrom, dateTo }),
-      OrderModel.count({ customer, status, productType, dateFrom, dateTo })
+      OrderModel.findPaged({ offset, limit, customer, status, productType, productId, dateFrom, dateTo }),
+      OrderModel.count({ customer, status, productType, productId, dateFrom, dateTo })
     ]);
     res.json({ data, meta: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (err) {
@@ -24,13 +25,15 @@ exports.getAll = async (req, res, next) => {
 
 exports.create = async (req, res, next) => {
   try {
-    const { order_date, customer_name, product_type, product_id, quantity, unit_price, total_amount, status, notes } = req.body;
+    const { order_date, customer_name, product_type, product_id, quantity, unit_price, manual_unit_weight_kg, total_amount, status, notes } = req.body;
     if (!order_date) throw new AppError('order_date is required', 400);
     if (!customer_name) throw new AppError('customer_name is required', 400);
     const qty = Number(quantity);
     if (!Number.isInteger(qty) || qty <= 0) throw new AppError('quantity must be a positive integer', 400);
     const price = Number(unit_price ?? 0);
     if (!Number.isFinite(price) || price < 0) throw new AppError('unit_price must be a non-negative number', 400);
+    const manualWt = manual_unit_weight_kg != null ? Number(manual_unit_weight_kg) : null;
+    if (manualWt != null && (!Number.isFinite(manualWt) || manualWt < 0)) throw new AppError('manual_unit_weight_kg must be a non-negative number', 400);
     if (product_id != null) {
       const [prow] = await db.query('SELECT * FROM products WHERE id = ?', [product_id]);
       if (prow.length === 0) throw new AppError('product_id does not reference an existing product', 400);
@@ -56,6 +59,7 @@ exports.create = async (req, res, next) => {
       product_id,
       quantity: qty,
       unit_price: price,
+      manual_unit_weight_kg: manualWt,
       total_amount,
       status,
       notes,
@@ -70,11 +74,13 @@ exports.create = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { order_date, customer_name, product_type, product_id, quantity, unit_price, total_amount, status, notes } = req.body;
+    const { order_date, customer_name, product_type, product_id, quantity, unit_price, manual_unit_weight_kg, total_amount, status, notes } = req.body;
     const qty = Number(quantity);
     if (!Number.isInteger(qty) || qty <= 0) throw new AppError('quantity must be a positive integer', 400);
     const price = Number(unit_price ?? 0);
     if (!Number.isFinite(price) || price < 0) throw new AppError('unit_price must be a non-negative number', 400);
+    const manualWt2 = manual_unit_weight_kg != null ? Number(manual_unit_weight_kg) : null;
+    if (manualWt2 != null && (!Number.isFinite(manualWt2) || manualWt2 < 0)) throw new AppError('manual_unit_weight_kg must be a non-negative number', 400);
     if (product_id != null) {
       const [prow] = await db.query('SELECT * FROM products WHERE id = ?', [product_id]);
       if (prow.length === 0) throw new AppError('product_id does not reference an existing product', 400);
@@ -100,6 +106,7 @@ exports.update = async (req, res, next) => {
       product_id,
       quantity: qty,
       unit_price: price,
+      manual_unit_weight_kg: manualWt2,
       total_amount,
       status,
       notes

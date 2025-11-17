@@ -41,7 +41,7 @@ function Dashboard() {
     );
   }
 
-  const dashboardData = stats || { total_chicks: 0, current_stock: 0, mortality_rate: 0, monthly_sales: 0, feed_consumption: [], breed_distribution: [], product_distribution: [], recent_activity: [] };
+  const dashboardData = stats || { total_chicks: 0, current_stock: 0, mortality_rate: 0, monthly_sales: 0, monthly_delivered_weight:0, monthly_revenue_per_kg:0, total_sales:0, total_delivered_weight:0, total_revenue_per_kg:0, feed_consumption: [], breed_distribution: [], product_distribution: [], recent_activity: [] };
 
   return (
     <Container fluid className="py-4">
@@ -116,6 +116,46 @@ function Dashboard() {
               </div>
               <h2 className="stats-number">${Number(dashboardData.total_sales || 0).toFixed(2)}</h2>
               <p className="stats-label">Total Sales</p>
+            </Card.Body>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* Additional Weight & Efficiency Metrics */}
+      <Row className="mb-4 g-4">
+        <Col md={6} lg={3}>
+          <Card className="stats-card h-100">
+            <Card.Body className="text-center">
+              <div className="stats-icon feed">⚖️</div>
+              <h2 className="stats-number">{Number(dashboardData.monthly_delivered_weight || 0).toFixed(2)} kg</h2>
+              <p className="stats-label">Monthly Delivered Weight</p>
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col md={6} lg={3}>
+          <Card className="stats-card h-100">
+            <Card.Body className="text-center">
+              <div className="stats-icon feed">📦</div>
+              <h2 className="stats-number">{Number(dashboardData.total_delivered_weight || 0).toFixed(2)} kg</h2>
+              <p className="stats-label">Total Delivered Weight</p>
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col md={6} lg={3}>
+          <Card className="stats-card h-100">
+            <Card.Body className="text-center">
+              <div className="stats-icon slaughter">💹</div>
+              <h2 className="stats-number">${Number(dashboardData.monthly_revenue_per_kg || 0).toFixed(2)}</h2>
+              <p className="stats-label">Monthly Revenue / Kg</p>
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col md={6} lg={3}>
+          <Card className="stats-card h-100">
+            <Card.Body className="text-center">
+              <div className="stats-icon users">📈</div>
+              <h2 className="stats-number">${Number(dashboardData.total_revenue_per_kg || 0).toFixed(2)}</h2>
+              <p className="stats-label">All-Time Revenue / Kg</p>
             </Card.Body>
           </Card>
         </Col>

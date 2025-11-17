@@ -23,7 +23,7 @@ exports.getAll = async (req, res, next) => {
 
 exports.create = async (req, res, next) => {
   try {
-    const { type, packaged_quantity, batch_id } = req.body;
+    const { type, packaged_quantity, batch_id, base_unit_price } = req.body;
     if (!type || typeof type !== 'string') {
       throw new AppError('type is required', 400);
     }
@@ -32,6 +32,14 @@ exports.create = async (req, res, next) => {
     if (!Number.isFinite(qty) || qty < 0) {
       throw new AppError('packaged_quantity must be a non-negative number', 400);
     }
+    let basePrice = null;
+    if (base_unit_price != null && base_unit_price !== '') {
+      const bp = Number(base_unit_price);
+      if (!Number.isFinite(bp) || bp < 0) {
+        throw new AppError('base_unit_price must be a non-negative number', 400);
+      }
+      basePrice = bp;
+    }
     if (batch_id != null) {
       // verify batch exists
       const [b] = await db.query('SELECT id FROM chicks WHERE id = ?', [batch_id]);
@@ -39,7 +47,7 @@ exports.create = async (req, res, next) => {
         throw new AppError('batch_id does not reference an existing batch', 400);
       }
     }
-  const created = await ProductModel.create({ type: nType, packaged_quantity: qty, batch_id });
+  const created = await ProductModel.create({ type: nType, packaged_quantity: qty, batch_id, base_unit_price: basePrice });
     res.status(201).json(created);
   } catch (err) {
     next(err);
@@ -49,7 +57,7 @@ exports.create = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { type, packaged_quantity, batch_id } = req.body;
+    const { type, packaged_quantity, batch_id, base_unit_price } = req.body;
     if (!type || typeof type !== 'string') {
       throw new AppError('type is required', 400);
     }
@@ -58,13 +66,21 @@ exports.update = async (req, res, next) => {
     if (!Number.isFinite(qty) || qty < 0) {
       throw new AppError('packaged_quantity must be a non-negative number', 400);
     }
+    let basePrice = null;
+    if (base_unit_price != null && base_unit_price !== '') {
+      const bp = Number(base_unit_price);
+      if (!Number.isFinite(bp) || bp < 0) {
+        throw new AppError('base_unit_price must be a non-negative number', 400);
+      }
+      basePrice = bp;
+    }
     if (batch_id != null) {
       const [b] = await db.query('SELECT id FROM chicks WHERE id = ?', [batch_id]);
       if (b.length === 0) {
         throw new AppError('batch_id does not reference an existing batch', 400);
       }
     }
-  const updated = await ProductModel.update(id, { type: nType, packaged_quantity: qty, batch_id });
+  const updated = await ProductModel.update(id, { type: nType, packaged_quantity: qty, batch_id, base_unit_price: basePrice });
     res.json({ message: 'Product updated successfully', updated });
   } catch (err) {
     next(err);
@@ -92,8 +108,8 @@ exports.remove = async (req, res, next) => {
       // otherwise ignore schema probe errors and proceed
     }
     await ProductModel.delete(id);
-    await revertSlaughteredQuantityOnProductDelete(id);
-    res.json({ message: 'Product deleted successfully' });
+    const revertResult = await revertSlaughteredQuantityOnProductDelete(id);
+    res.json({ message: 'Product deleted successfully', revert: revertResult });
   } catch (err) {
     next(err);
   }

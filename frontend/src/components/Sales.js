@@ -89,8 +89,21 @@ const Sales = () => {
   const exportPDF = () => {
   const doc = new jsPDF();
   drawHeader(doc, 'Sales Report');
-    const head = [['ID','Date','Customer','Product','Qty','Delivered','Pending','Unit','Total','Status']];
-    const body = filtered.map(r => ([r.id, r.order_date, r.customer_name, r.product_type, r.order_quantity, r.delivered_qty, r.pending_qty, Number(r.unit_price || 0).toFixed(2), Number(r.total_amount || 0).toFixed(2), r.status]));
+    const head = [['ID','Date','Customer','Product','Qty','Delivered','Pending','Unit Wt (kg)','Unit Price','Unit Rev','Total','Status']];
+    const body = filtered.map(r => ([
+      r.id,
+      r.order_date,
+      r.customer_name,
+      r.product_type,
+      r.order_quantity,
+      r.delivered_qty,
+      r.pending_qty,
+      r.unit_weight_kg != null ? Number(r.unit_weight_kg).toFixed(2) : '-',
+      Number(r.unit_price || 0).toFixed(2),
+      r.unit_weight_kg != null ? (Number(r.unit_weight_kg) * Number(r.unit_price || 0)).toFixed(2) : '-',
+      Number(r.total_amount || 0).toFixed(2),
+      r.status
+    ]));
     // add totals row
     body.push(['', '', 'Totals', '', totals.qty, totals.delivered, totals.pending, '', Number(totals.total).toFixed(2), '']);
     // @ts-ignore
@@ -110,8 +123,10 @@ const Sales = () => {
       ['Order Qty', r.order_quantity],
       ['Delivered Qty', r.delivered_qty],
       ['Pending Qty', r.pending_qty],
-      ['Unit Price', Number(r.unit_price||0).toFixed(2)],
-      ['Total (delivered×unit)', Number(r.total_amount|| (r.delivered_qty * r.unit_price) || 0).toFixed(2)],
+      ['Unit Weight (kg)', r.unit_weight_kg != null ? Number(r.unit_weight_kg).toFixed(2) : '-'],
+      ['Unit Price (per kg)', Number(r.unit_price||0).toFixed(2)],
+      ['Unit Revenue (wt×price)', r.unit_weight_kg != null ? (Number(r.unit_weight_kg) * Number(r.unit_price||0)).toFixed(2) : '-'],
+      ['Total Revenue', Number(r.total_amount|| (r.delivered_qty * r.unit_price) || 0).toFixed(2)],
       ['Status', r.status],
     ];
     // @ts-ignore
@@ -185,7 +200,9 @@ const Sales = () => {
                   <th>Qty</th>
                   <th>Delivered</th>
                   <th>Pending</th>
+                  <th>Unit Wt (kg)</th>
                   <th>Unit Price</th>
+                  <th>Unit Rev</th>
                   <th>Total</th>
                   <th>Status</th>
                 </tr>
@@ -202,7 +219,9 @@ const Sales = () => {
                     <td>{r.order_quantity}</td>
                     <td>{r.delivered_qty}</td>
                     <td>{r.pending_qty}</td>
+                    <td>{r.unit_weight_kg != null ? Number(r.unit_weight_kg).toFixed(2) : '-'}</td>
                     <td>{Number(r.unit_price || 0).toFixed(2)}</td>
+                    <td>{r.unit_weight_kg != null ? (Number(r.unit_weight_kg) * Number(r.unit_price || 0)).toFixed(2) : '-'}</td>
                     <td>{Number((r.total_amount ?? (r.delivered_qty * r.unit_price)) || 0).toFixed(2)}</td>
                     <td className="d-flex align-items-center justify-content-between">
                       <span>{r.status}</span>

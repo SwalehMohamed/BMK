@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS slaughtered (
     FOREIGN KEY (batch_id) REFERENCES chicks(id) ON DELETE CASCADE
 );
 
+-- Add base_unit_price to products if not exists (migration helper)
+ALTER TABLE products ADD COLUMN IF NOT EXISTS base_unit_price DECIMAL(10,2) DEFAULT NULL AFTER weight;
+
 -- Create indexes for better performance
 CREATE INDEX idx_chicks_arrival_date ON chicks(arrival_date);
 CREATE INDEX idx_mortality_date ON mortality_logs(date);

@@ -56,14 +56,13 @@ exports.getAll = async (req, res, next) => {
 exports.create = async (req, res, next) => {
   try {
     const { order_id, delivery_date, recipient_name, address, quantity_delivered, notes } = req.body;
+    if (!order_id) throw new AppError('order_id is required', 400);
     if (!delivery_date) throw new AppError('delivery_date is required', 400);
     if (!recipient_name) throw new AppError('recipient_name is required', 400);
     const qty = Number(quantity_delivered);
     if (!Number.isInteger(qty) || qty <= 0) throw new AppError('quantity_delivered must be a positive integer', 400);
-    if (order_id != null) {
-      const [o] = await db.query('SELECT id FROM orders WHERE id = ?', [order_id]);
-      if (o.length === 0) throw new AppError('order_id does not reference an existing order', 400);
-    }
+    const [o] = await db.query('SELECT id FROM orders WHERE id = ?', [order_id]);
+    if (o.length === 0) throw new AppError('order_id does not reference an existing order', 400);
     // Over-delivery prevention
     if (order_id) {
       const order = await OrderModel.findById(order_id);
@@ -113,6 +112,11 @@ exports.update = async (req, res, next) => {
     }
     const existing = await DeliveryModel.findById(id);
     if (!existing) throw new AppError('Delivery not found', 404);
+
+    // Prevent removing order linkage if it already exists
+    if (existing.order_id && (order_id == null || order_id === '')) {
+      throw new AppError('Cannot remove order link from an existing delivery', 400);
+    }
 
     // Over-delivery prevention for update
     if (order_id) {

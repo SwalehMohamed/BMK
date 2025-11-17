@@ -50,12 +50,36 @@ exports.getAll = async (req, res, next) => {
 
     const [[countRow]] = await db.query(`SELECT COUNT(*) AS cnt FROM orders o ${where}`, params);
 
-    // map to friendly status and compute sale value based on delivered quantity * product type price
+    // For weight-based revenue we need product weight or avg slaughter weight and price per kg
+    // Fetch all needed price/weight info in one go
+    const orderIds = rows.map(r => r.id);
+    let weightPriceByOrder = new Map();
+    if (orderIds.length > 0) {
+      const [extra] = await db.query(`
+        SELECT o.id AS order_id,
+               COALESCE(o.manual_unit_weight_kg, p.weight, s.avg_weight, 1) AS unit_weight_kg,
+               COALESCE(p.base_unit_price, t.price, o.unit_price, 0) AS price_per_kg
+          FROM orders o
+          LEFT JOIN products p ON p.id = o.product_id
+          LEFT JOIN slaughtered s ON s.id = p.slaughtered_id
+          LEFT JOIN product_types t ON t.name = LCASE(COALESCE(o.product_type, p.type))
+         WHERE o.id IN (${orderIds.map(()=>'?').join(',')})
+      `, orderIds);
+      for (const e of extra) {
+        weightPriceByOrder.set(e.order_id, {
+          unit_weight_kg: Number(e.unit_weight_kg || 1),
+          price_per_kg: Number(e.price_per_kg || 0)
+        });
+      }
+    }
+
+    // map to friendly status and compute sale value based on delivered quantity * unit_weight_kg * price_per_kg
     const mapped = rows.map(r => {
-      const unitPrice = Number(r.type_price ?? r.order_unit_price ?? 0);
       const delivered = Number(r.delivered_qty || 0);
       const qty = Number(r.order_quantity || 0);
       const status = delivered === 0 ? 'Pending Delivery' : (delivered >= qty ? 'Delivered' : 'Partial');
+      const wp = weightPriceByOrder.get(r.id) || { unit_weight_kg: 1, price_per_kg: Number(r.type_price ?? r.order_unit_price ?? 0) };
+      const total_amount = delivered * wp.unit_weight_kg * wp.price_per_kg;
       return {
         id: r.id,
         order_date: r.order_date,
@@ -64,9 +88,10 @@ exports.getAll = async (req, res, next) => {
         order_quantity: qty,
         delivered_qty: delivered,
         pending_qty: Number(r.pending_qty || 0),
-        unit_price: unitPrice,
-        // Revenue is based on delivered quantity, not ordered quantity
-        total_amount: unitPrice * delivered,
+        unit_price: wp.price_per_kg,
+        unit_weight_kg: wp.unit_weight_kg,
+        unit_revenue: wp.unit_weight_kg * wp.price_per_kg,
+        total_amount,
         status
       };
     });

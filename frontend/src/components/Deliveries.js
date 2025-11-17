@@ -33,7 +33,10 @@ function Deliveries() {
     notes: ''
   });
 
-  const orderOptions = useMemo(() => (orders || []).map(o => ({ value: o.id, label: `${o.customer_name} • ${o.product_type || o.product_type_resolved || 'N/A'} (${o.quantity})` })), [orders]);
+  // Only show orders in the Add Delivery modal that are not fully delivered yet
+  const orderOptions = useMemo(() => (orders || [])
+    .filter(o => Number(o.delivered_sum || 0) < Number(o.quantity || 0))
+    .map(o => ({ value: o.id, label: `${o.customer_name} • ${o.product_type || o.product_type_resolved || 'N/A'} (${o.quantity - (o.delivered_sum || 0)} remaining)` })), [orders]);
 
   const fetchAll = async (page = meta.page, limit = meta.limit) => {
     setLoading(true);
@@ -56,7 +59,12 @@ function Deliveries() {
         setDeliveries(dRes.data || []);
         setMeta(m => ({ ...m, total: dRes.data?.length || 0, pages: 1 }));
       }
-      setOrders(oRes.data || []);
+      // Normalize orders response similar to deliveries structure
+      if (oRes.data?.data) {
+        setOrders(Array.isArray(oRes.data.data) ? oRes.data.data : []);
+      } else {
+        setOrders(Array.isArray(oRes.data) ? oRes.data : []);
+      }
       setError('');
     } catch (err) {
       console.error('Error fetching deliveries/orders', err);
@@ -73,6 +81,13 @@ function Deliveries() {
   useEffect(() => { fetchAll(1, meta.limit); /* reset page */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.orderId, filters.recipient, filters.dateFrom, filters.dateTo]);
+
+  // When modal opens and there are available orders, preselect first if none chosen
+  useEffect(() => {
+    if (showModal && orderOptions.length > 0 && !form.order_id) {
+      setForm(prev => ({ ...prev, order_id: String(orderOptions[0].value) }));
+    }
+  }, [showModal, orderOptions, form.order_id]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -152,8 +167,11 @@ function Deliveries() {
     <div className="container mt-4">
       <div className="d-flex justify-content-between align-items-center mb-3">
         <h2>Deliveries</h2>
-        <Button onClick={() => setShowModal(true)} disabled={loading}>Add Delivery</Button>
+        <Button onClick={() => setShowModal(true)} disabled={loading || orderOptions.length === 0}>Add Delivery</Button>
       </div>
+      {orderOptions.length === 0 && !loading && (
+        <Alert variant="warning" className="py-1 small">No pending orders available. Create an order before adding a delivery.</Alert>
+      )}
       <div className="d-flex flex-wrap gap-3 mb-3 small text-muted">
         <div className="badge bg-secondary">Deliveries (page): {summary.count}</div>
         <div className="badge bg-info">Total Delivered (page): {summary.qty}</div>
@@ -221,8 +239,7 @@ function Deliveries() {
                     </td>
                     <td>
                       {editingId === d.id ? (
-                        <Form.Select value={editForm.order_id} onChange={(e)=>setEditForm(prev=>({...prev, order_id:e.target.value}))}>
-                          <option value="">No order</option>
+                        <Form.Select required value={editForm.order_id} onChange={(e)=>setEditForm(prev=>({...prev, order_id:e.target.value}))}>
                           {(orders||[]).map(o => (
                             <option key={o.id} value={o.id}>#{o.id} • {o.customer_name}</option>
                           ))}
@@ -313,9 +330,9 @@ function Deliveries() {
               <Form.Control value={form.recipient_name} onChange={(e) => setForm(prev => ({...prev, recipient_name: e.target.value}))} required />
             </Form.Group>
             <Form.Group className="mb-2">
-              <Form.Label>Link to Order</Form.Label>
-              <Form.Select value={form.order_id} onChange={(e) => setForm(prev => ({...prev, order_id: e.target.value}))}>
-                <option value="">No order</option>
+              <Form.Label>Order (required)</Form.Label>
+              <Form.Select required value={form.order_id} onChange={(e) => setForm(prev => ({...prev, order_id: e.target.value}))}>
+                <option value="">Select an order...</option>
                 {orderOptions.map(oo => (
                   <option key={oo.value} value={oo.value}>{oo.label}</option>
                 ))}

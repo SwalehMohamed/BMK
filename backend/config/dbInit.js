@@ -89,6 +89,7 @@ async function ensureTables() {
       product_type VARCHAR(100) NULL,
       product_id INT NULL,
       quantity INT NOT NULL,
+      manual_unit_weight_kg DECIMAL(10,2) NULL,
       unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,
       total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
       status VARCHAR(50) NOT NULL DEFAULT 'pending',
@@ -102,6 +103,19 @@ async function ensureTables() {
     )`);
   } catch (err) {
     console.error('DB init error creating orders table:', err.message);
+  }
+  // Ensure manual_unit_weight_kg exists on orders for legacy DBs
+  try {
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS manual_unit_weight_kg DECIMAL(10,2) NULL AFTER quantity`);
+  } catch (err) {
+    try {
+      const [rows] = await db.query(`SELECT COUNT(*) AS cnt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'orders' AND column_name = 'manual_unit_weight_kg'`);
+      if ((rows?.[0]?.cnt || 0) === 0) {
+        await db.query(`ALTER TABLE orders ADD COLUMN manual_unit_weight_kg DECIMAL(10,2) NULL AFTER quantity`);
+      }
+    } catch (e2) {
+      console.error('DB init error ensuring orders.manual_unit_weight_kg column:', e2.message);
+    }
   }
 
   // Ensure deliveries table exists
@@ -156,8 +170,10 @@ async function ensureTables() {
 
   // Ensure products has batch_id column and FK/index if upgrading from legacy schema
   try {
-    const [cols] = await db.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'products' AND column_name = 'batch_id'`);
-    const hasBatchId = (cols?.length || 0) > 0;
+    const [colsAll] = await db.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'products'`);
+    const names = colsAll.map(c => c.column_name);
+    const hasBatchId = names.includes('batch_id');
+    const hasSlaughteredId = names.includes('slaughtered_id');
     if (!hasBatchId) {
       await db.query(`ALTER TABLE products ADD COLUMN batch_id INT NULL AFTER packaged_quantity`);
       // Add index
@@ -168,6 +184,12 @@ async function ensureTables() {
       } catch (e2) {
         // ignore if constraint already exists
       }
+    }
+    // Add slaughtered_id column (new linkage for precise revert) if missing
+    if (!hasSlaughteredId) {
+      try { await db.query(`ALTER TABLE products ADD COLUMN slaughtered_id INT NULL AFTER batch_id`); } catch(e) {}
+      try { await db.query(`CREATE INDEX idx_products_slaughtered ON products(slaughtered_id)`); } catch(e) {}
+      try { await db.query(`ALTER TABLE products ADD CONSTRAINT fk_products_slaughtered FOREIGN KEY (slaughtered_id) REFERENCES slaughtered(id) ON DELETE SET NULL`); } catch(e) {}
     }
   } catch (err) {
     console.error('DB init error ensuring products.batch_id:', err.message);

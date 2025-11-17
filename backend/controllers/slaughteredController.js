@@ -7,30 +7,38 @@ exports.createProductsFromSlaughter = async (req, res, next) => {
     if (!slaughteredId || !option || !Array.isArray(weights) || weights.length === 0) {
       throw new AppError('Missing or invalid parameters', 400);
     }
-    // Get slaughtered record
     const db = require('../config/db');
     const [[slaughtered]] = await db.query('SELECT * FROM slaughtered WHERE id = ?', [slaughteredId]);
     if (!slaughtered) throw new AppError('Slaughtered record not found', 404);
 
-    // Calculate total quantity to deduct
-    let totalQty = 0;
+    // Uniform quantity logic for mince/parts: all quantities must match
     let productsToCreate = [];
-    if (option === 'whole') {
+    let totalQty = 0;
+    if (option === 'whole' || option === 'mince' || option === 'parts') {
+      // Enforce uniform quantity across all rows for ALL options
+      const quantities = weights.map(w => Number(w.quantity));
+      const uniform = quantities[0];
+      if (!Number.isFinite(uniform) || uniform <= 0) throw new AppError('Uniform quantity must be a positive number', 400);
+      const allSame = quantities.every(q => q === uniform);
+      if (!allSame) throw new AppError('All sub-product quantities must be identical for this option', 400);
       for (const wq of weights) {
-        if (!wq.weight || !wq.quantity) throw new AppError('Invalid weight/quantity', 400);
-        totalQty += Number(wq.quantity);
-        productsToCreate.push({ type: 'whole chicken', packaged_quantity: Number(wq.quantity), batch_id: slaughtered.batch_id, weight: Number(wq.weight) });
+        const wt = Number(wq.weight);
+        if (!Number.isFinite(wt) || wt <= 0) throw new AppError('Invalid weight value', 400);
+        const prodType = option === 'whole' ? 'whole chicken' : (wq.type || null);
+        if (option !== 'whole' && !prodType) throw new AppError('Missing product type for sub-product', 400);
+        productsToCreate.push({ type: prodType, packaged_quantity: uniform, batch_id: slaughtered.batch_id, weight: wt, slaughtered_id: slaughtered.id });
       }
-    } else if (option === 'mince' || option === 'parts') {
-      for (const wq of weights) {
-        if (!wq.type || !wq.weight || !wq.quantity) throw new AppError('Invalid type/weight/quantity', 400);
-        totalQty += Number(wq.quantity);
-        productsToCreate.push({ type: wq.type, packaged_quantity: Number(wq.quantity), batch_id: slaughtered.batch_id, weight: Number(wq.weight) });
-      }
+      // Consumption logic: for mince/parts, chickens are shared across sub-products, so count once.
+      // For whole, each row represents a distinct group of whole birds.
+      totalQty = (option === 'whole') ? (uniform * weights.length) : uniform;
     } else {
       throw new AppError('Invalid product creation option', 400);
     }
-    if (slaughtered.quantity < totalQty) throw new AppError('Not enough slaughtered quantity available', 400);
+
+    // Warn if total derived exceeds slaughtered.quantity
+    if (totalQty > slaughtered.quantity) {
+      throw new AppError(`Derived product quantity (${totalQty}) exceeds slaughtered available (${slaughtered.quantity})`, 400);
+    }
 
     // Create products
     const createdProducts = [];
@@ -39,11 +47,11 @@ exports.createProductsFromSlaughter = async (req, res, next) => {
       createdProducts.push(created);
     }
 
-    // Reduce slaughtered quantity
+    // Deduct used quantity
     const newQty = slaughtered.quantity - totalQty;
     await db.query('UPDATE slaughtered SET quantity = ? WHERE id = ?', [newQty, slaughteredId]);
 
-    res.status(201).json({ message: 'Products created and slaughtered quantity updated', products: createdProducts, slaughteredId, newQty });
+    res.status(201).json({ message: 'Products created', products: createdProducts, slaughteredId, remaining_quantity: newQty });
   } catch (err) {
     next(err);
   }

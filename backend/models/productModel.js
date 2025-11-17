@@ -64,7 +64,9 @@ class ProductModel {
       type: product.type,
       packaged_quantity: product.packaged_quantity,
       batch_id: product.batch_id ?? null,
-      weight: product.weight ?? null
+      weight: product.weight ?? null,
+      base_unit_price: product.base_unit_price ?? null,
+      slaughtered_id: product.slaughtered_id ?? null
     };
     const [result] = await db.query('INSERT INTO products SET ?', payload);
     // Fetch the created row to get created_at
@@ -77,7 +79,9 @@ class ProductModel {
       type: product.type,
       packaged_quantity: product.packaged_quantity,
       batch_id: product.batch_id ?? null,
-      weight: product.weight ?? null
+      weight: product.weight ?? null,
+      base_unit_price: product.base_unit_price ?? null,
+      slaughtered_id: product.slaughtered_id ?? null
     };
     await db.query('UPDATE products SET ? WHERE id = ?', [payload, id]);
     // Fetch the updated row to get created_at

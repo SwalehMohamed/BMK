@@ -20,16 +20,20 @@ function Orders() {
     product_type: '',
     product_id: '',
     quantity: '',
+    manual_unit_weight_kg: '',
     unit_price: '',
     status: 'pending',
     notes: ''
   });
+  const [unitPriceEdited, setUnitPriceEdited] = useState(false);
+  const [autoPriceLoading, setAutoPriceLoading] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [filters, setFilters] = useState({ status: '', customer: '', dateFrom: '', dateTo: '' });
+  const [typeList, setTypeList] = useState([]); // product types for price fallback
 
-  const productOptions = useMemo(() => (products || []).map(p => ({ value: p.id, label: `${p.type} (Batch ${p.batch_id ?? '-'}) • Avail: ${p.available_qty ?? p.packaged_quantity}` })), [products]);
+  const productOptions = useMemo(() => (Array.isArray(products) ? products : []).map(p => ({ value: p.id, label: `${p.type} (Batch ${p.batch_id ?? '-'}) • Avail: ${p.available_qty ?? p.packaged_quantity}` })), [products]);
 
   const fetchOrders = async (page = meta.page, limit = meta.limit) => {
     try {
@@ -58,15 +62,27 @@ function Orders() {
   const fetchProducts = async () => {
     try {
       const pRes = await api.get('/products');
-      setProducts(pRes.data || []);
+      const raw = pRes.data;
+      const list = Array.isArray(raw)
+        ? raw
+        : (Array.isArray(raw?.data) ? raw.data : []);
+      setProducts(list);
     } catch (err) {
       console.error('Error fetching products', err);
+      setProducts([]);
     }
+  };
+
+  const fetchTypes = async () => {
+    try {
+      const res = await api.get('/product-types');
+      setTypeList(res.data || []);
+    } catch (err) { /* silent */ }
   };
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([fetchProducts(), fetchOrders(1, meta.limit)])
+    Promise.all([fetchProducts(), fetchOrders(1, meta.limit), fetchTypes()])
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -84,19 +100,69 @@ function Orders() {
         ...form,
         product_id: form.product_id ? Number(form.product_id) : null,
         quantity: Number(form.quantity),
+        manual_unit_weight_kg: form.manual_unit_weight_kg !== '' ? Number(form.manual_unit_weight_kg) : null,
         unit_price: Number(form.unit_price)
       };
       await api.post('/orders', payload);
       setSuccess('Order created');
       setTimeout(() => setSuccess(''), 2500);
       setShowModal(false);
-      setForm({ order_date: new Date().toISOString().slice(0,10), customer_name: '', product_type: '', product_id: '', quantity: '', unit_price: '', status: 'pending', notes: '' });
+      setForm({ order_date: new Date().toISOString().slice(0,10), customer_name: '', product_type: '', product_id: '', quantity: '', manual_unit_weight_kg: '', unit_price: '', status: 'pending', notes: '' });
       await fetchOrders(1, meta.limit);
     } catch (err) {
       console.error('Error creating order', err);
       setError(err?.response?.data?.message || 'Error creating order');
     }
   };
+
+  // Auto-fill unit price based on last order for selected product or product_type
+  useEffect(() => {
+    const run = async () => {
+      if (unitPriceEdited) return; // user has manually edited
+      const pid = form.product_id;
+      const ptype = form.product_type?.trim();
+      if (!pid && !ptype) return;
+      // Prefer base_unit_price on the selected product if available
+      if (pid) {
+        const prod = (Array.isArray(products) ? products : []).find(p => String(p.id) === String(pid));
+        if (prod && prod.base_unit_price != null && prod.base_unit_price !== '') {
+          setForm(prev => ({ ...prev, unit_price: String(prod.base_unit_price) }));
+          return; // skip fetching last order price
+        }
+      }
+      // Fallback: product type price from typeList
+      const typeKey = (ptype || (pid ? (products||[]).find(p=>String(p.id)===String(pid))?.type : '') || '').toLowerCase();
+      if (typeKey) {
+        const match = (typeList||[]).find(t => String(t.name).toLowerCase() === typeKey);
+        if (match && match.price != null) {
+          setForm(prev => ({ ...prev, unit_price: String(match.price) }));
+          return; // skip last order fetch
+        }
+      }
+      setAutoPriceLoading(true);
+      try {
+        const params = new URLSearchParams();
+        params.set('page','1');
+        params.set('limit','1');
+        if (pid) params.set('product_id', pid);
+        else if (ptype) params.set('product_type', ptype.toLowerCase());
+        const res = await api.get(`/orders?${params.toString()}`);
+        const list = res.data?.data || (Array.isArray(res.data) ? res.data : []);
+        if (Array.isArray(list) && list.length > 0) {
+          const price = list[0].unit_price;
+          if (price != null) {
+            setForm(prev => ({ ...prev, unit_price: String(price) }));
+          }
+        }
+      } catch (err) {
+        // silent fail
+      } finally {
+        setAutoPriceLoading(false);
+      }
+    };
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.product_id, form.product_type, products, typeList]);
 
   const openEdit = (o) => {
     setEditId(o.id);
@@ -106,6 +172,7 @@ function Orders() {
       product_type: o.product_type || '',
       product_id: o.product_id || '',
       quantity: o.quantity || 0,
+      manual_unit_weight_kg: o.manual_unit_weight_kg ?? '',
       unit_price: o.unit_price || 0,
       status: o.status || 'pending',
       notes: o.notes || ''
@@ -120,6 +187,7 @@ function Orders() {
         ...editForm,
         product_id: editForm.product_id ? Number(editForm.product_id) : null,
         quantity: Number(editForm.quantity),
+        manual_unit_weight_kg: editForm.manual_unit_weight_kg !== '' ? Number(editForm.manual_unit_weight_kg) : null,
         unit_price: Number(editForm.unit_price)
       };
       await api.put(`/orders/${editId}`, payload);
@@ -278,7 +346,9 @@ function Orders() {
                 <th>Product</th>
                 <th>Qty</th>
                 <th>Delivered</th>
+                <th>Unit Wt (kg)</th>
                 <th>Unit Price</th>
+                <th>Unit Rev</th>
                 <th>Total</th>
                 <th>Status</th>
                 <th>Notes</th>
@@ -300,7 +370,9 @@ function Orders() {
                         {Number(o.delivered_sum||0)}
                       </Badge>
                     </td>
+                    <td>{o.manual_unit_weight_kg != null && o.manual_unit_weight_kg !== '' ? Number(o.manual_unit_weight_kg).toFixed(2) : '-'}</td>
                     <td>{Number(o.unit_price).toFixed(2)}</td>
+                    <td>{(o.manual_unit_weight_kg != null && o.manual_unit_weight_kg !== '' ? (Number(o.manual_unit_weight_kg) * Number(o.unit_price)) : '-')}</td>
                     <td>{Number(o.total_amount).toFixed(2)}</td>
                     <td className="text-capitalize">{o.status}</td>
                     <td>{o.notes || ''}</td>
@@ -372,8 +444,17 @@ function Orders() {
               </div>
               <div className="col">
                 <Form.Group className="mb-2">
+                  <Form.Label>Unit Weight (kg, optional)</Form.Label>
+                  <Form.Control type="number" min={0} step={0.01} value={form.manual_unit_weight_kg}
+                    onChange={(e) => setForm(prev => ({...prev, manual_unit_weight_kg: e.target.value}))} placeholder="e.g., 1.20" />
+                  <Form.Text className="text-muted">Overrides product/avg weight if provided.</Form.Text>
+                </Form.Group>
+              </div>
+              <div className="col">
+                <Form.Group className="mb-2">
                   <Form.Label>Unit Price</Form.Label>
-                  <Form.Control type="number" min={0} step={0.01} value={form.unit_price} onChange={(e) => setForm(prev => ({...prev, unit_price: e.target.value}))} required />
+                  <Form.Control type="number" min={0} step={0.01} value={form.unit_price} onChange={(e) => { setUnitPriceEdited(true); setForm(prev => ({...prev, unit_price: e.target.value}))}} required />
+                  {autoPriceLoading && <div className="small text-muted">Auto-filling price…</div>}
                 </Form.Group>
               </div>
             </div>
@@ -427,6 +508,14 @@ function Orders() {
                 <Form.Group className="mb-2">
                   <Form.Label>Quantity</Form.Label>
                   <Form.Control type="number" min={1} value={editForm.quantity || ''} onChange={(e)=>setEditForm(prev=>({...prev,quantity:e.target.value}))} required />
+                </Form.Group>
+              </div>
+              <div className="col">
+                <Form.Group className="mb-2">
+                  <Form.Label>Unit Weight (kg, optional)</Form.Label>
+                  <Form.Control type="number" min={0} step={0.01} value={editForm.manual_unit_weight_kg || ''}
+                    onChange={(e)=>setEditForm(prev=>({...prev,manual_unit_weight_kg:e.target.value}))} placeholder="e.g., 1.20" />
+                  <Form.Text className="text-muted">Overrides product/avg weight if provided.</Form.Text>
                 </Form.Group>
               </div>
               <div className="col">

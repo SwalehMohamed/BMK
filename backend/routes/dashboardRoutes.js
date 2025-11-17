@@ -15,88 +15,89 @@ router.get('/', async (req, res, next) => {
       : (Number.isFinite(mortalityDays) && mortalityDays > 0
           ? `DATE_SUB(CURDATE(), INTERVAL ${Math.floor(mortalityDays)} DAY)`
           : `DATE_SUB(CURDATE(), INTERVAL 3 MONTH)`);
-    // 1. Total chicks (sum of all initial_count)
-    let total_chicks = 0;
-    try {
-      const [chickRows] = await db.query('SELECT IFNULL(SUM(initial_count),0) AS total_chicks FROM chicks');
-      total_chicks = chickRows?.[0]?.total_chicks || 0;
-    } catch { /* table may not exist yet */ }
-
-    // 2. Total deaths (sum of all number_dead)
+    // 1-3. Core flock metrics (initial, deaths, slaughtered)
+    let total_initial = 0;
     let total_dead = 0;
+    let total_slaughtered = 0;
+    try {
+      const [chickRows] = await db.query('SELECT IFNULL(SUM(initial_count),0) AS total_initial FROM chicks');
+      total_initial = chickRows?.[0]?.total_initial || 0;
+    } catch { /* table may not exist yet */ }
     try {
       const [deathRows] = await db.query('SELECT IFNULL(SUM(number_dead),0) AS total_dead FROM mortality_logs');
       total_dead = deathRows?.[0]?.total_dead || 0;
     } catch {}
-
-    // 3. Total slaughtered (sum of all quantity)
-    let total_slaughtered = 0;
     try {
       const [slaughterRows] = await db.query('SELECT IFNULL(SUM(quantity),0) AS total_slaughtered FROM slaughtered');
       total_slaughtered = slaughterRows?.[0]?.total_slaughtered || 0;
     } catch {}
 
-    // 4. Current stock
-    const current_stock = total_chicks - total_dead - total_slaughtered;
+    // Alive chicks (requested as "Total Chicks"): not dead and not slaughtered
+    const alive_chicks = Math.max(0, Number(total_initial) - Number(total_dead) - Number(total_slaughtered));
 
-    // 5. Mortality rate (configurable period)
-    // Approach: deaths in period divided by stock at risk at start of the period
-    // starting_stock = chicks arrived before periodStart - deaths before periodStart - slaughtered before periodStart
+    // 4. Current stock: remaining products (packaged minus delivered)
+    let current_stock = 0;
+    try {
+      const [[{ total_products = 0 } = {}]] = await db.query(`SELECT IFNULL(SUM(packaged_quantity),0) AS total_products FROM products`);
+      const [[{ total_delivered_units = 0 } = {}]] = await db.query(`
+        SELECT IFNULL(SUM(d.quantity_delivered),0) AS total_delivered_units
+          FROM deliveries d
+          JOIN orders o ON o.id = d.order_id
+         WHERE o.product_id IS NOT NULL
+      `);
+      current_stock = Math.max(0, Number(total_products) - Number(total_delivered_units));
+    } catch {}
+
+    // 5. Mortality rate (overall): total_dead / total_initial
     let mortality_rate = 0;
     try {
-      const [[{ total_chicks_before = 0 } = {}]] = await db.query(`
-        SELECT IFNULL(SUM(initial_count),0) AS total_chicks_before
-          FROM chicks
-         WHERE arrival_date < ${periodStartExpr}
-      `);
-      const [[{ total_dead_before = 0 } = {}]] = await db.query(`
-        SELECT IFNULL(SUM(number_dead),0) AS total_dead_before
-          FROM mortality_logs
-         WHERE date < ${periodStartExpr}
-      `);
-      const [[{ total_slaughtered_before = 0 } = {}]] = await db.query(`
-        SELECT IFNULL(SUM(quantity),0) AS total_slaughtered_before
-          FROM slaughtered
-         WHERE date < ${periodStartExpr}
-      `);
-      const [[{ period_deaths = 0 } = {}]] = await db.query(`
-        SELECT IFNULL(SUM(number_dead),0) AS period_deaths
-          FROM mortality_logs
-         WHERE date >= ${periodStartExpr}
-      `);
-
-      const starting_stock = Math.max(0, Number(total_chicks_before) - Number(total_dead_before) - Number(total_slaughtered_before));
-      mortality_rate = starting_stock > 0
-        ? Number(((Number(period_deaths) / starting_stock) * 100).toFixed(2))
+      mortality_rate = Number(total_initial) > 0
+        ? Number(((Number(total_dead) / Number(total_initial)) * 100).toFixed(2))
         : 0;
     } catch {}
 
-    // 6. Monthly sales revenue (this month): Sum of delivered_qty * price
+    // 6. Monthly sales revenue (this month): weight-based = delivered_qty * unit_weight(kg) * price_per_kg
     let monthly_sales = 0;
+    let monthly_delivered_weight = 0;
     try {
       const [salesRows] = await db.query(`
-        SELECT IFNULL(SUM(d.quantity_delivered * COALESCE(t.price, o.unit_price, 0)), 0) AS revenue
+        SELECT IFNULL(SUM(
+                 d.quantity_delivered
+                 * COALESCE(o.manual_unit_weight_kg, p.weight, s.avg_weight, 1)
+                 * COALESCE(p.base_unit_price, t.price, o.unit_price, 0)
+               ), 0) AS revenue
+             , IFNULL(SUM(d.quantity_delivered * COALESCE(o.manual_unit_weight_kg, p.weight, s.avg_weight, 1)),0) AS delivered_weight
           FROM deliveries d
           LEFT JOIN orders o ON o.id = d.order_id
           LEFT JOIN products p ON p.id = o.product_id
+          LEFT JOIN slaughtered s ON s.id = p.slaughtered_id
           LEFT JOIN product_types t ON t.name = LCASE(COALESCE(o.product_type, p.type))
          WHERE MONTH(d.delivery_date) = MONTH(CURDATE())
            AND YEAR(d.delivery_date) = YEAR(CURDATE())
       `);
       monthly_sales = Number(salesRows?.[0]?.revenue || 0);
+      monthly_delivered_weight = Number(salesRows?.[0]?.delivered_weight || 0);
     } catch {}
 
-    // 6b. Total sales revenue (all time): Sum of delivered_qty * price
+    // 6b. Total sales revenue (all time): weight-based
     let total_sales = 0;
+    let total_delivered_weight = 0;
     try {
       const [totSalesRows] = await db.query(`
-        SELECT IFNULL(SUM(d.quantity_delivered * COALESCE(t.price, o.unit_price, 0)), 0) AS revenue
+        SELECT IFNULL(SUM(
+                 d.quantity_delivered
+                 * COALESCE(o.manual_unit_weight_kg, p.weight, s.avg_weight, 1)
+                 * COALESCE(p.base_unit_price, t.price, o.unit_price, 0)
+               ), 0) AS revenue
+             , IFNULL(SUM(d.quantity_delivered * COALESCE(o.manual_unit_weight_kg, p.weight, s.avg_weight, 1)),0) AS delivered_weight
           FROM deliveries d
           LEFT JOIN orders o ON o.id = d.order_id
           LEFT JOIN products p ON p.id = o.product_id
+          LEFT JOIN slaughtered s ON s.id = p.slaughtered_id
           LEFT JOIN product_types t ON t.name = LCASE(COALESCE(o.product_type, p.type))
       `);
       total_sales = Number(totSalesRows?.[0]?.revenue || 0);
+      total_delivered_weight = Number(totSalesRows?.[0]?.delivered_weight || 0);
     } catch {}
 
     // 7. Feed consumption (last 6 months): union of used and purchased per month
@@ -180,13 +181,21 @@ router.get('/', async (req, res, next) => {
     } catch {}
 
     // Compose stats object
+    const avg_unit_weight = total_delivered_weight > 0 ? Number((total_delivered_weight / Math.max(1, total_delivered_weight / (total_sales > 0 ? (total_sales / (total_sales/total_delivered_weight)) : 1))).toFixed(2)) : null; // placeholder logic if needed
+    const monthly_revenue_per_kg = monthly_delivered_weight > 0 ? Number((monthly_sales / monthly_delivered_weight).toFixed(2)) : 0;
+    const total_revenue_per_kg = total_delivered_weight > 0 ? Number((total_sales / total_delivered_weight).toFixed(2)) : 0;
+
     const stats = {
-      total_chicks,
+      total_chicks: alive_chicks,
       total_dead,
       current_stock,
       mortality_rate,
       monthly_sales,
+      monthly_delivered_weight,
+      monthly_revenue_per_kg,
       total_sales,
+      total_delivered_weight,
+      total_revenue_per_kg,
       feed_consumption,
       product_distribution: productRows,
       breed_distribution: breedRows,
