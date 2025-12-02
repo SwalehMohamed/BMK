@@ -1,0 +1,20 @@
+---
+# cPanel Git Version Control deployment file
+# This will run after cPanel pulls the latest commit.
+# It builds the frontend (Option A, same-origin API), installs backend deps,
+# and restarts the Node app via Passenger (touch restart.txt).
+
+deployment:
+  tasks:
+    # Show where we are
+    - /bin/pwd
+    - /bin/ls -la
+
+    # Build the React app with API at /api (Option A)
+    - /bin/bash -lc 'cd frontend && export REACT_APP_API_URL=/api && npm ci && npm run build'
+
+    # Install backend production dependencies
+    - /bin/bash -lc 'cd backend && npm ci --omit=dev'
+
+    # Restart Passenger (expects restart.txt inside the app root)
+    - /bin/bash -lc 'mkdir -p backend/tmp && touch backend/tmp/restart.txt'
