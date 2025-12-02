@@ -1,0 +1,64 @@
+name: Deploy to cPanel
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install and build frontend (Option A)
+        working-directory: frontend
+        env:
+          REACT_APP_API_URL: /api
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload files to cPanel via rsync
+        uses: burnett01/rsync-deployments@6.0
+        with:
+          switches: -avzr --delete --exclude ".git" --exclude "**/node_modules" --exclude ".github"
+          path: ./
+          remote_path: ${{ secrets.APP_PATH }}
+          remote_host: ${{ secrets.CPANEL_HOST }}
+          remote_user: ${{ secrets.CPANEL_USER }}
+          remote_key: ${{ secrets.SSH_KEY }}
+
+      - name: Ensure remote app directories exist
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.CPANEL_HOST }}
+          username: ${{ secrets.CPANEL_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            mkdir -p "$APP_PATH"
+            mkdir -p "$APP_PATH/backend"
+            mkdir -p "$APP_PATH/backend/tmp"
+        env:
+          APP_PATH: ${{ secrets.APP_PATH }}
+
+      - name: Install backend dependencies and restart Passenger
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.CPANEL_HOST }}
+          username: ${{ secrets.CPANEL_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd "$APP_PATH/backend"
+            npm ci --omit=dev
+            mkdir -p "$APP_PATH/backend/tmp" && touch "$APP_PATH/backend/tmp/restart.txt"
+        env:
+          APP_PATH: ${{ secrets.APP_PATH }}
+
+      - name: Done
+        run: echo "Deployment complete"
