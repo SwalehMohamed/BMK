@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const multer = require('multer');
 const upload = multer();
 const rateLimit = require('express-rate-limit');
@@ -41,7 +42,9 @@ app.use((req, res, next) => {
 });
 
 // Serve legacy site as landing page at '/'
-const legacyRoot = path.join(__dirname, '..', 'legacy-bmtc');
+const repoRoot = path.join(__dirname, '..');
+const legacyCandidate = path.join(repoRoot, 'legacy-bmtc');
+const legacyRoot = fs.existsSync(legacyCandidate) ? legacyCandidate : repoRoot;
 // Root-level static for legacy assets and forms
 app.use('/assets', express.static(path.join(legacyRoot, 'assets')));
 app.use('/forms', express.static(path.join(legacyRoot, 'forms')));
@@ -62,6 +65,19 @@ app.get(['/company', '/company/',
   const file = req.path.replace('/company', '') || '/index.html';
   const target = path.join(legacyRoot, file);
   res.sendFile(target);
+});
+
+// Serve root-level legacy pages directly (e.g., /services.html)
+const topLevelLegacyPages = [
+  'index.html',
+  'about.html',
+  'services.html',
+  'Constructions.html',
+  'contact.html'
+];
+app.get(topLevelLegacyPages.map(p => `/${p}`), (req, res) => {
+  const file = req.path.slice(1);
+  res.sendFile(path.join(legacyRoot, file));
 });
 
 // Map legacy Future pages to root and /company for convenience
@@ -195,6 +211,7 @@ ensureTables()
     verifyTransport?.();
     app.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
+      console.log(`Legacy root serving from: ${legacyRoot}`);
       console.log(`Legacy site available at http://localhost:${PORT}/ (and /company)`);
       console.log(`Web app (React build) at http://localhost:${PORT}/kuku (and /app)`);
       if (process.env.RECAPTCHA_SECRET) {
