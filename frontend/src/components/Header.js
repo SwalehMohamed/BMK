@@ -26,6 +26,7 @@ function Header() {
           <Nav className="me-auto">
             {currentUser && (
               <>
+                <a href="/company" className="nav-link fw-medium" target="_blank" rel="noreferrer">🏢 Company Site</a>
                 <LinkContainer to="/dashboard">
                   <Nav.Link className="fw-medium">📊 Dashboard</Nav.Link>
                 </LinkContainer>

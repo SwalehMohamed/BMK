@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -33,9 +34,35 @@ app.use((req, res, next) => {
   next();
 });
 
-// Test route
+// Serve legacy site as landing page at '/'
+const legacyRoot = path.join(__dirname, '..', 'legacy-bmtc');
+// Root-level static for legacy assets and forms
+app.use('/assets', express.static(path.join(legacyRoot, 'assets')));
+app.use('/forms', express.static(path.join(legacyRoot, 'forms')));
 app.get('/', (req, res) => {
-  res.json({ message: 'Server is running' });
+  res.sendFile(path.join(legacyRoot, 'index.html'));
+});
+
+// Serve legacy company website (static) under /company
+app.use('/company/assets', express.static(path.join(legacyRoot, 'assets')));
+app.use('/company/forms', express.static(path.join(legacyRoot, 'forms')));
+// Serve top-level legacy html pages
+app.get(['/company', '/company/',
+  '/company/index.html',
+  '/company/about.html',
+  '/company/services.html',
+  '/company/Constructions.html',
+  '/company/contact.html'], (req, res) => {
+  const file = req.path.replace('/company', '') || '/index.html';
+  const target = path.join(legacyRoot, file);
+  res.sendFile(target);
+});
+
+// Serve React build under /app (SPA)
+const appBuildRoot = path.join(__dirname, '..', 'frontend', 'build');
+app.use('/app', express.static(appBuildRoot));
+app.get(['/app', '/app/*'], (req, res) => {
+  res.sendFile(path.join(appBuildRoot, 'index.html'));
 });
 
 // Routes
@@ -64,5 +91,7 @@ ensureTables()
     verifyTransport?.();
     app.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
+      console.log(`Legacy site available at http://localhost:${PORT}/ (and /company)`);
+      console.log(`Web app (React build) at http://localhost:${PORT}/app`);
     });
   });
