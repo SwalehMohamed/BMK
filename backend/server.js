@@ -107,6 +107,30 @@ app.get(['/kuku', '/kuku/*'], (req, res) => {
 // Expose build root assets at server root for components using absolute paths
 app.use(express.static(appBuildRoot));
 
+// Map common SPA routes at root to the React app
+// This lets users visit /login, /dashboard, etc., even if the app's homepage is /kuku
+const spaRootRoutes = [
+  '/login',
+  '/forgot-password',
+  '/reset-password',
+  '/dashboard',
+  '/feed',
+  '/chicks',
+  '/mortalities',
+  '/slaughter',
+  '/products',
+  '/orders',
+  '/deliveries',
+  '/profile',
+  '/users',
+  '/product-types',
+  '/sales',
+  '/user-home'
+];
+app.get(spaRootRoutes, (req, res) => {
+  res.sendFile(path.join(appBuildRoot, 'index.html'));
+});
+
 // ----- Legacy forms -> Express mailer endpoints -----
 // Rate limiting for form submissions
 const formLimiter = rateLimit({
