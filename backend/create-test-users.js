@@ -13,13 +13,13 @@ async function createTestUser() {
       console.log('✅ Admin user already exists');
       
       // Update password if needed
-      await db.query('UPDATE users SET password = ? WHERE email = ?', [hashedPassword, 'admin@bmk.com']);
+      await db.query('UPDATE users SET password_hash = ? WHERE email = ?', [hashedPassword, 'admin@bmk.com']);
       console.log('✅ Admin password updated');
     } else {
       // Create admin user
       const [result] = await db.query(
-        'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)',
-        ['Admin User', 'admin@bmk.com', hashedPassword, 'admin']
+        'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
+        ['admin', 'admin@bmk.com', hashedPassword, 'admin']
       );
       console.log('✅ Admin user created with ID:', result.insertId);
     }
@@ -30,8 +30,8 @@ async function createTestUser() {
     
     if (testUsers.length === 0) {
       const [result] = await db.query(
-        'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)',
-        ['Test User', 'user@bmk.com', testUserPassword, 'user']
+        'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
+        ['testuser', 'user@bmk.com', testUserPassword, 'user']
       );
       console.log('✅ Test user created with ID:', result.insertId);
     } else {
@@ -39,7 +39,7 @@ async function createTestUser() {
     }
     
     // Show all users
-    const [allUsers] = await db.query('SELECT id, name, email, role, created_at FROM users');
+    const [allUsers] = await db.query('SELECT id, username, email, role, created_at FROM users');
     console.log('\n📊 Current users:');
     console.table(allUsers);
     
