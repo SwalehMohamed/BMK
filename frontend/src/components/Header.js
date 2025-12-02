@@ -13,7 +13,7 @@ function Header() {
         <LinkContainer to="/">
           <Navbar.Brand className="d-flex align-items-center">
             <img 
-              src="/logo192.png" 
+              src={`${process.env.PUBLIC_URL || ''}/logo192.png`} 
               alt="Bin Masud Kuku Logo" 
               height="80" 
               width="80" 

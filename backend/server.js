@@ -88,6 +88,9 @@ app.get(['/kuku', '/kuku/*'], (req, res) => {
   res.sendFile(path.join(appBuildRoot, 'index.html'));
 });
 
+// Expose build root assets at server root for components using absolute paths
+app.use(express.static(appBuildRoot));
+
 // ----- Legacy forms -> Express mailer endpoints -----
 // Rate limiting for form submissions
 const formLimiter = rateLimit({
