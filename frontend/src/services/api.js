@@ -1,6 +1,11 @@
 import axios from 'axios';
-// Allow overriding via environment: REACT_APP_API_URL
-const baseURL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+// Base URL logic:
+// - Use REACT_APP_API_URL if provided at build time
+// - In development fallback to localhost:5000
+// - In production fallback to same-origin '/api' to avoid pointing to localhost
+const baseURL =
+  process.env.REACT_APP_API_URL ||
+  (process.env.NODE_ENV === 'development' ? 'http://localhost:5000/api' : '/api');
 const api = axios.create({ baseURL });
 
 api.interceptors.request.use(
