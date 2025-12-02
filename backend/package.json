@@ -13,20 +13,28 @@
     "recalc:orders": "node scripts/recalc-orders-totals.js --apply"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "mysql2": "^3.6.0",
-    "dotenv": "^16.3.1",
-    "cors": "^2.8.5",
-    "body-parser": "^1.20.2",
     "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
     "joi": "^17.9.2",
-    "nodemailer": "^6.9.10"
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.6.0",
+    "nodemailer": "^6.9.10",
+    "multer": "^2.0.0",
+    "express-rate-limit": "^7.1.0",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
-  "keywords": ["farm", "management", "nodejs", "mysql"],
-  "author": "Your Name",
+  "keywords": [
+    "farm",
+    "management",
+    "nodejs",
+    "mysql"
+  ],
+  "author": "Swaleh Mohamed",
   "license": "ISC"
 }

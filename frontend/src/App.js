@@ -26,7 +26,7 @@ import RoleBasedRoute from './utils/RoleBasedRoute';
 
 function App() {
   return (
-    <Router>
+    <Router basename={process.env.PUBLIC_URL || '/'}>
       <AuthProvider>
         <Header />
         <Routes>
